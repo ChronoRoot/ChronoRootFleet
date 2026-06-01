@@ -1,0 +1,419 @@
+<div class="bg-white border rounded shadow-sm overflow-hidden">
+    <table class="table table-dense mb-0 w-100">
+        <thead>
+            <tr>
+                <th width="3%" class="text-center"><input type="checkbox" id="selectAll" onclick="toggleAll(this)"></th>
+                <th width="15%">Identity</th>
+                <th width="32%">Experiment Status</th>
+                <th width="35%">Hardware & State</th>
+                <th width="15%" class="text-center">Node Actions</th>
+            </tr>
+        </thead>
+        <tbody id="fleet-table-body">
+            <tr><td colspan="5" class="text-center py-5 text-muted"><i class="fas fa-circle-notch fa-spin fa-2x mb-3"></i><br>Sweeping network...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="modal fade" id="historyModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content shadow">
+      <div class="modal-header bg-dark text-white border-0 py-3">
+        <h5 class="modal-title"><i class="fas fa-server"></i> <span id="hist-hostname"></span> History Ledger</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body bg-light" style="max-height: 70vh; overflow-y: auto;">
+        <h6 class="font-weight-bold text-uppercase text-muted small"><i class="fas fa-flask"></i> Experiment Ledger</h6>
+        <div class="bg-white border rounded shadow-sm mb-4">
+            <table class="table table-sm table-hover mb-0">
+                <thead class="bg-light text-muted small">
+                    <tr><th>Date</th><th>Cohort Name</th><th>Status</th><th>Yield</th><th>Link</th></tr>
+                </thead>
+                <tbody id="hist-runs-body"></tbody>
+            </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+    // --- TABLE SELECTION & FILTERING ---
+    function toggleSelection(mac) {
+        if (selectedMacs.has(mac)) selectedMacs.delete(mac);
+        else selectedMacs.add(mac);
+        document.getElementById('selected-count').innerText = selectedMacs.size;
+        if(typeof calculateEstimates === 'function') calculateEstimates();
+    }
+
+    function toggleAll(source) {
+        let checkboxes = document.querySelectorAll('.module-checkbox:not(:disabled)');
+        checkboxes.forEach(cb => {
+            let row = cb.closest('tr');
+            if (row.style.display !== 'none') {
+                cb.checked = source.checked;
+                if (source.checked) selectedMacs.add(cb.value);
+                else selectedMacs.delete(cb.value);
+            }
+        });
+        document.getElementById('selected-count').innerText = selectedMacs.size;
+        if(typeof calculateEstimates === 'function') calculateEstimates();
+    }
+
+    function filterView(view, btnElement) {
+        currentView = view;
+        document.querySelectorAll('.btn-filter').forEach(btn => btn.classList.remove('active'));
+        if(btnElement) btnElement.classList.add('active');
+        fetchFleetData(); 
+    }
+
+    // --- DATA RENDERING ---
+    async function fetchFleetData() {
+        try {
+            const response = await fetch('/api/fleet/live-digested');
+            let rawData = await response.json(); 
+            
+            let nodesList = Array.isArray(rawData) ? rawData : (rawData.nodes || []);
+            let masterTime = rawData.master_time || "N/A";
+            
+            document.getElementById('last-sync-time').innerHTML = `
+                <span class="text-muted me-3" style="margin-right: 15px;">Last scan: ${new Date().toLocaleTimeString()}</span>
+                <span class="badge bg-primary text-white px-2 py-1 shadow-sm"><i class="fas fa-server"></i> Master Time: ${masterTime}</span>
+            `;
+            
+            // 1. Initialize Counters
+            let counts = { 'ALL': 0, 'RUNNING': 0, 'WAITING': 0, 'IDLE': 0, 'OFFLINE': 0, 'ATTENTION': 0 };
+            let html = '';
+            
+            let hideToggle = document.getElementById('hideOfflineToggle');
+            let hideOffline = hideToggle ? hideToggle.checked : false;
+
+            nodesList.forEach(node => {
+                
+                // 2. Tally Counts
+                counts['ALL']++;
+                counts[node.primary_state]++;
+                if (node.needs_attention) counts['ATTENTION']++;
+
+                // 3. Apply Visibility Filters
+                if (hideOffline && !node.is_online) return; 
+                if (currentView === 'ATTENTION' && !node.needs_attention) return;
+                if (currentView !== 'ALL' && currentView !== 'ATTENTION' && currentView !== node.primary_state) return;
+
+                // 4. Disable Checkbox if Offline
+                let isChecked = selectedMacs.has(node.mac) ? 'checked' : '';
+                let checkboxHtml = node.is_online 
+                    ? `<input type="checkbox" class="module-checkbox" value="${node.mac}" onclick="toggleSelection('${node.mac}')" ${isChecked}>` 
+                    : `<input type="checkbox" class="module-checkbox" disabled title="Cannot select offline modules">`;
+
+                // --- OFFLINE RENDER ---
+                if (!node.is_online) {
+                    html += `
+                    <tr class="row-hover" style="opacity: 0.6; background-color: #f8f9fa;">
+                        <td class="text-center">${checkboxHtml}</td>
+                        <td>
+                            <div class="font-weight-bold text-secondary text-truncate" style="font-size: 1.05rem; cursor:pointer;" onclick="editAlias('${node.mac}', '${node.hostname}')" title="Click to edit name">
+                                <i class="fas fa-edit small text-muted"></i> ${node.hostname}
+                            </div>
+                            <div class="text-muted hw-detail">${node.ip}</div>
+                        </td>
+                        <td>
+                            <div class="text-danger font-weight-bold mb-1"><i class="fas fa-unlink"></i> Module Offline</div>
+                            <div class="text-muted small"><i class="far fa-clock"></i> Last Seen: <br>${node.last_seen}</div>
+                        </td>
+                        <td>
+                            <div class="text-muted small"><i class="fas fa-microchip"></i> Configured as: ${node.hardware_desc}</div>
+                            <div class="text-muted small"><i class="fas fa-globe"></i> Time Mode: ${node.time_mode || 'Unknown'}</div>
+                        </td>
+                        <td>
+                            <div class="d-flex flex-column gap-2">
+                                <button class="btn btn-sm btn-outline-secondary w-100 disabled"><i class="fas fa-ban"></i> Offline</button>
+                                <button onclick="showHistory('${node.mac}', '${node.hostname}', '${node.ip}')" class="btn btn-sm btn-light border shadow-sm text-secondary w-100 justify-content-start">
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> History Ledger
+                                </button>
+                            </div>
+                        </td>
+                    </tr>`;
+                    return; // Skip the rest of the loop for this node
+                }
+
+                // --- ONLINE RENDER ---
+                let storageWarn = node.storage_pct > 85;
+                let camsOk = node.cams_ok === node.cams_total;
+
+                let irStatusText = node.ir_status || "UNKNOWN";
+                let irColorClass = "text-muted"; 
+                if (irStatusText === "WORKING") irColorClass = "text-success font-weight-bold";
+                else if (irStatusText === "NOT DETECTED") irColorClass = "text-danger font-weight-bold";
+                else if (irStatusText === "UNKNOWN") irColorClass = "text-warning font-weight-bold";
+                
+                let timeBadge = "";
+                if (node.time_sync_status.includes("Synced")) {
+                    timeBadge = `<span class="text-success font-weight-bold" title="Drift: ${node.drift_seconds}s"><i class="fas fa-check-circle"></i> ${node.time_sync_status}</span>`;
+                } else if (node.time_sync_status.includes("Drift")) {
+                    let driftText = node.drift_seconds !== "N/A" ? `Drift: ${node.drift_seconds}s` : "Drift: Unknown";
+                    let readableDrift = driftText;
+                    if (typeof node.drift_seconds === "number" && node.drift_seconds > 120) {
+                        readableDrift = `Drift: ${Math.floor(node.drift_seconds / 60)} mins`;
+                    }
+                    timeBadge = `<span class="text-danger font-weight-bold" title="${driftText}"><i class="fas fa-times-circle"></i> ${node.time_sync_status}<br><small>${readableDrift}</small></span>`;
+                } else {
+                    timeBadge = `<span class="text-warning font-weight-bold" title="${node.drift_seconds}"><i class="fas fa-exclamation-triangle"></i> ${node.time_sync_status}</span>`;
+                }
+                
+                let alertHtml = '';
+                if (node.issues && node.issues.length > 0) {
+                    alertHtml = `<div class="mt-2 badge bg-danger text-white px-2 py-1 w-100 text-start text-truncate"><i class="fas fa-exclamation-triangle"></i> ${node.issues.join(', ')}</div>`;
+                }
+
+                let jobHtml = '<div class="text-muted small font-italic py-2"><i class="fas fa-bed"></i> System Idle (No active experiment)</div>';
+                
+                if (node.is_diagnosing) {
+                    jobHtml = `
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <strong class="text-info text-truncate"><i class="fas fa-stethoscope fa-pulse mr-1"></i> Hardware Scan</strong>
+                            <span class="badge border border-info text-info bg-white small">DIAGNOSING</span>
+                        </div>
+                        <div class="text-muted small font-italic mb-3">Testing I2C bus and active camera ports...</div>
+                        <div class="progress rounded-pill shadow-sm" style="height: 8px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-info w-100"></div>
+                        </div>
+                    `;
+                } else if (node.has_job) {
+                    let statCol = node.job_status === 'ERROR' ? 'text-danger' : (node.job_status === 'SCHEDULED' ? 'text-warning' : 'text-primary');
+                    let barColor = node.job_status === 'ERROR' ? 'bg-danger' : (node.job_status === 'SCHEDULED' ? 'bg-warning' : 'bg-success progress-bar-striped progress-bar-animated');
+                    let progressText = node.job_status === 'SCHEDULED' ? 'Waiting to start...' : `${node.taken} of ${node.expected} images per camera`;
+
+                    jobHtml = `
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <strong class="${statCol} text-truncate" style="max-width: 180px;" title="${node.job_name}">${node.job_name || 'Untitled'}</strong>
+                            <span class="badge border ${statCol} bg-white small">${node.job_status}</span>
+                        </div>
+                        <div class="text-muted small text-truncate" title="Folder Name">
+                            <i class="fas fa-folder-open text-warning"></i> ${node.local_exp_id || 'Unknown Folder'}
+                        </div>
+                        ${node.job_desc ? `<div class="text-muted small font-italic mb-2 text-truncate" title="${node.job_desc}">"${node.job_desc}"</div>` : '<div class="mb-2"></div>'}
+                        <div class="d-flex justify-content-between align-items-center mb-1 hw-detail text-muted">
+                            <span><i class="fas fa-camera"></i> ${progressText}</span>
+                            <span class="font-weight-bold">${node.progress_pct}%</span>
+                        </div>
+                        <div class="mini-bar-container mb-2">
+                            <div class="mini-bar ${barColor}" style="width: ${node.progress_pct}%;"></div>
+                        </div>
+                        <div class="hw-detail text-primary font-weight-bold bg-light border rounded px-2 py-1 d-inline-block mt-1">
+                            <i class="fas fa-clock"></i> Next Capture: ${node.next_pic_time}
+                        </div>
+                    `;
+                }
+
+                let lockHtml = node.is_locked ? 
+                    `<span class="text-warning font-weight-bold" title="Owner: ${node.lock_owner}"><i class="fas fa-lock"></i> Locked (${node.lock_owner})</span>` : 
+                    `<span class="text-success"><i class="fas fa-check-circle"></i> Free</span>`;
+
+                html += `
+                    <tr class="row-hover">
+                        <td class="text-center">
+                            ${checkboxHtml}
+                        </td>
+                        <td>
+                            <div class="font-weight-bold text-dark text-truncate" style="font-size: 1.05rem; cursor: pointer;" onclick="editAlias('${node.mac}', '${node.hostname}')" title="Click to rename module">
+                                <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                            </div>
+                            <div class="text-muted hw-detail">${node.ip}</div>
+                            ${alertHtml}
+                        </td>
+                        <td>${jobHtml}</td>
+                        <td>
+                            <div class="row hw-detail" style="font-size: 0.85rem;">
+                                <div class="col-6 mb-2">
+                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Cameras</div>
+                                    <div class="${!camsOk ? 'text-danger font-weight-bold' : 'text-success'}"><i class="fas fa-video"></i> ${node.cams_ok}/${node.cams_total} OK</div>
+                                </div>
+                                <div class="col-6 mb-2">
+                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Hardware</div>
+                                    <div class="text-primary font-weight-bold"><i class="fas fa-microchip"></i> ${node.hardware_desc || 'Unknown'}</div>
+                                </div>
+                                
+                                <div class="col-6 mb-2">
+                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Storage</div>
+                                    <div class="${storageWarn ? 'text-danger font-weight-bold' : 'text-dark'}"><i class="fas fa-hdd"></i> ${node.storage_pct}% Used</div>
+                                </div>
+                                <div class="col-6 mb-2">
+                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">IR Lights</div>
+                                    <div class="${irColorClass}"><i class="fas fa-lightbulb"></i> ${irStatusText}</div>
+                                </div>
+
+                                <div class="col-6 mb-2">
+                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Last Picture</div>
+                                    <div class="text-dark"><i class="fas fa-history"></i> ${node.last_pic_time}</div>
+                                </div>
+                                <div class="col-6 mb-2">
+                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">System Clock</div>
+                                    <div>${timeBadge}</div>
+                                </div>
+                                
+                                <div class="col-12 mt-1 pt-2 border-top d-flex align-items-center">
+                                    <div class="text-muted small text-uppercase me-2" style="font-size: 0.65rem; letter-spacing: 0.5px; margin-right: 8px;">Hardware Lock:</div>
+                                    <div>${lockHtml}</div>
+                                </div>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="d-flex flex-column gap-2">
+                                <a href="http://${node.ip}/" target="_blank" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start">
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-home"></i></div> Main Page
+                                </a>
+                                
+                                <button onclick="runSingleDiagnostic('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-light border shadow-sm text-warning w-100 justify-content-start">
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-stethoscope"></i></div> Diagnostic
+                                </button>
+                                
+                                <button onclick="openConfigModal('${node.mac}', '${node.raw_hostname || node.hostname}')" class="btn btn-sm btn-light border shadow-sm text-dark w-100 justify-content-start">
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-cog"></i></div> Edit Config
+                                </button>
+                                
+                                <button onclick="rebootSingleNode('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-outline-danger w-100 justify-content-start">
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-power-off"></i></div> Reboot Node
+                                </button>
+                                
+                                <button onclick="showHistory('${node.mac}', '${node.hostname}', '${node.ip}')" class="btn btn-sm btn-light border shadow-sm text-secondary w-100 justify-content-start">
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> History Ledger
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            // 5. Update DOM Badges
+            Object.keys(counts).forEach(key => {
+                let badge = document.getElementById(`count-${key}`);
+                if (badge) badge.innerText = counts[key];
+            });
+
+            // Update top bar stats
+            if(document.getElementById('stat-total')) document.getElementById('stat-total').innerText = counts['ALL'];
+            if(document.getElementById('stat-running')) document.getElementById('stat-running').innerText = counts['RUNNING'];
+            if(document.getElementById('stat-errors')) document.getElementById('stat-errors').innerText = counts['ATTENTION'];
+
+            document.getElementById('fleet-table-body').innerHTML = html || '<tr><td colspan="5" class="text-center py-5 text-muted"><i class="fas fa-info-circle fa-2x mb-3 text-secondary"></i><br>No modules match this view.</td></tr>';
+            
+        } catch (error) { 
+            console.error("Data fetch error", error); 
+        }
+    }
+
+    setInterval(fetchFleetData, 5000);
+    fetchFleetData();
+
+    // --- NODE ACTIONS ---
+    async function runSingleDiagnostic(mac, hostname) {
+        const confirmed = await asyncConfirm('Run Diagnostic', `Run a hardware diagnostic scan on ${hostname}?`);
+        if(!confirmed) return;
+        try {
+            await fetch(`/api/node/${mac}/diagnostic`, { method: 'POST' });
+            showToast(`Diagnostic scan started on ${hostname}. Background tests will take a few minutes.`, 'success');
+            fetchFleetData();
+        } catch(e) { 
+            showToast(`Failed to contact Master Controller to scan ${hostname}.`, 'danger'); 
+        }
+    }
+
+    async function editAlias(mac, currentName) {
+        let newName = await asyncPrompt('Edit Custom Name', `Enter a new custom name for module [${mac}]:`, currentName);
+        if (newName !== null) {
+            try {
+                await fetch(`/api/fleet/db/modules/${mac}/alias`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ alias: newName })
+                });
+                fetchFleetData(); 
+            } catch (e) {
+                showToast("Failed to update module name.", 'danger');
+            }
+        }
+    }
+
+    async function executeBulk(action) {
+        if (selectedMacs.size === 0) { showToast("Select at least one module.", 'warning'); return; }
+        
+        const isReboot = action === 'REBOOT';
+        const confirmed = await asyncConfirm('Confirm Action', `Send ${action} command to ${selectedMacs.size} modules?`, isReboot);
+        if (!confirmed) return;
+        
+        let endpoint = '';
+        if (action === 'DIAGNOSTIC') endpoint = '/api/fleet/bulk/diagnostic';
+        if (action === 'REBOOT') endpoint = '/api/fleet/bulk/reboot';
+        if (action === 'TIME_SYNC') endpoint = '/api/fleet/bulk/time_sync_manual'; 
+
+        const buttons = document.querySelectorAll('.bulk-action-bar button');
+        buttons.forEach(b => b.disabled = true);
+
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_macs: Array.from(selectedMacs) })
+            });
+            const result = await response.json();
+            showToast(result.message || `${action} broadcast complete.`, 'success');
+        } catch(e) { 
+            showToast("Action failed to execute.", 'danger');
+        } finally {
+            buttons.forEach(b => b.disabled = false);
+            selectedMacs.clear();
+            document.getElementById('selected-count').innerText = "0";
+            if(document.getElementById('selectAll')) document.getElementById('selectAll').checked = false;
+            fetchFleetData();
+        }
+    }
+
+    async function rebootSingleNode(mac, hostname) {
+        const confirmed = await asyncConfirm('Force Reboot', `Are you absolutely sure you want to forcefully reboot ${hostname}?`, true);
+        if(confirmed) {
+            try {
+                await fetch(`/api/node/${mac}/reboot`, { method: 'POST' });
+                showToast(`Reboot command sent to ${hostname}. It will drop offline momentarily.`, 'warning');
+                fetchFleetData();
+            } catch(e) { 
+                showToast(`Failed to contact Master Controller to reboot ${hostname}.`, 'danger'); 
+            }
+        }
+    }
+
+    async function showHistory(mac, hostname, ip) {
+        document.getElementById('hist-hostname').innerText = hostname;
+        document.getElementById('hist-runs-body').innerHTML = '<tr><td colspan="5" class="text-center py-3"><i class="fas fa-spinner fa-spin"></i></td></tr>';
+        
+        new bootstrap.Modal(document.getElementById('historyModal')).show();
+
+        try {
+            const res = await fetch(`/api/fleet/db/modules/${mac}/history`);
+            const data = await res.json();
+            
+            let rHtml = '';
+            data.runs.forEach(r => {
+                let n_col = r.status === 'ERROR' ? 'text-danger' : (r.status === 'FINISHED' ? 'text-success' : 'text-primary');
+                let link = ip && r.local_exp_id ? `<a href="http://${ip}/exp/${r.local_exp_id}" target="_blank">View</a>` : '-';
+                
+                let timeLine = r.start ? `${r.start.substring(5,16)}<br>${r.end.substring(5,16)}` : 'Unknown';
+                let msgHtml = r.message ? `<br><small class="text-danger font-italic">${r.message}</small>` : '';
+
+                rHtml += `
+                <tr>
+                    <td class="small text-muted" style="line-height: 1.2;">${timeLine}</td>
+                    <td><span class="font-weight-bold text-dark">${r.name}</span>${msgHtml}</td>
+                    <td class="${n_col} font-weight-bold small">${r.status}</td>
+                    <td class="small">${r.taken}/${r.expected} <span class="text-danger">${r.missed > 0 ? `(-${r.missed})` : ''}</span></td>
+                    <td class="small">${link}</td>
+                </tr>`;
+            });
+            
+            document.getElementById('hist-runs-body').innerHTML = rHtml || '<tr><td colspan="5" class="text-center text-muted py-3">No experiments recorded.</td></tr>';
+
+        } catch(e) {
+            document.getElementById('hist-runs-body').innerHTML = '<tr><td colspan="5" class="text-danger text-center py-3">Failed to load data.</td></tr>';
+        }
+    }
+</script>

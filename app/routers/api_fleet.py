@@ -1,0 +1,637 @@
+# app/routers/api_fleet.py
+import asyncio
+import httpx
+from typing import List, Optional, Dict, Any
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+from datetime import datetime, timedelta
+from sqlmodel import Session, select
+
+from app.database import RobotModule, engine, FleetCohort, ExperimentRun
+from app.core.state import LIVE_FLEET_STATE
+from app.core.transformers import digest_node_state 
+
+router = APIRouter(prefix="/api/fleet", tags=["Fleet Orchestration"])
+
+# --- VALIDATION MODELS ---
+class BulkActionRequest(BaseModel):
+    target_macs: List[str]
+
+class BulkTimeSyncRequest(BulkActionRequest):
+    mode: str = Field(default="network", pattern="^(network|manual)$")
+    timezone: Optional[str] = None
+    ntp_server: Optional[str] = None
+    date_str: Optional[str] = None 
+
+class BulkConfigRequest(BulkActionRequest):
+    TIME_ZONE: Optional[str] = None
+    NTP_SERVER: Optional[str] = None   
+    SYNC_ENABLED: Optional[bool] = None
+    SYNC_INTERVAL: Optional[int] = Field(None, ge=1)
+    remote_type: Optional[str] = Field(None, pattern="^(local|sftp|ftp|advanced)$")
+    destination_path: Optional[str] = None
+    host: Optional[str] = None
+    port: Optional[int] = None
+    user: Optional[str] = None
+    password: Optional[str] = None
+
+class BulkSyncTestRequest(BulkActionRequest):
+    remote_type: str = Field(..., pattern="^(sftp|ftp)$")
+    host: str
+    user: str
+    password: str
+    port: Optional[int] = None
+
+# --- ASYNC BROADCAST HELPER ---
+async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_payload_fn=None, timeout: float = 5.0):
+    """
+    Generic concurrency helper. 
+    `get_payload_fn` is an optional callable that takes (mac, node_state) 
+    and returns the specific JSON payload for that exact node.
+    """
+    async with httpx.AsyncClient() as client:
+        async def call_node(mac):
+            if mac not in LIVE_FLEET_STATE:
+                return {"mac": mac, "status": "error", "message": "Offline"}
+            
+            node_state = LIVE_FLEET_STATE[mac]
+            ip = node_state["identity"]["ip"]
+            payload = get_payload_fn(mac, node_state) if get_payload_fn else None
+            
+            try:
+                req_kwargs = {"timeout": timeout}
+                if payload is not None:
+                    req_kwargs["json"] = payload
+
+                if method == "POST":
+                    res = await client.post(f"http://{ip}/api/{endpoint}", **req_kwargs)
+                elif method == "PUT":
+                    res = await client.put(f"http://{ip}/api/{endpoint}", **req_kwargs)
+                else: # GET
+                    res = await client.get(f"http://{ip}/api/{endpoint}", **req_kwargs)
+                    
+                res.raise_for_status()
+                return {"mac": mac, "status": "success", "data": res.json() if res.content else {}}
+            except Exception as e:
+                return {"mac": mac, "status": "error", "message": str(e)}
+            
+        return await asyncio.gather(*[call_node(m) for m in macs])
+
+@router.get("/live-digested")
+async def get_digested_fleet_state() -> Dict[str, Any]:
+    digested_list = []
+    master_time_obj = datetime.now()
+    
+    # 1 bulk query is highly performant
+    with Session(engine) as session:
+        db_modules = {m.mac_address: m for m in session.exec(select(RobotModule)).all()}
+
+    for mac, db_mod in db_modules.items():
+        raw = LIVE_FLEET_STATE.get(mac, {})
+        
+        # Pass the data through our single source of truth
+        digested_node = digest_node_state(mac, raw, db_mod, master_time_obj)
+        digested_list.append(digested_node)
+        
+    return {
+        "master_time": master_time_obj.strftime("%Y-%m-%d %H:%M:%S"),
+        "nodes": digested_list
+    }
+
+# --- 2. SWARM COMMANDS ---
+@router.post("/bulk/diagnostic")
+async def bulk_diagnostic(req: BulkActionRequest):
+    results = await broadcast_to_nodes(req.target_macs, "POST", "diagnostic")
+    return {"status": "complete", "results": results}
+
+@router.post("/bulk/reboot")
+async def bulk_reboot(req: BulkActionRequest):
+    # Short timeout expected because the Pi drops the connection to restart
+    results = await broadcast_to_nodes(req.target_macs, "POST", "reboot", timeout=2.0)
+    return {"status": "complete", "results": results}
+
+@router.post("/bulk/time")
+async def bulk_time_sync(req: BulkTimeSyncRequest):
+    base_payload = req.model_dump(exclude={"target_macs", "date_str"}, exclude_unset=True)
+    
+    if req.mode == "manual" and not req.date_str:
+        base_payload["date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elif req.date_str:
+        base_payload["date"] = req.date_str
+
+    def get_time_payload(mac, state):
+        return base_payload
+
+    results = await broadcast_to_nodes(req.target_macs, "POST", "config/time", get_payload_fn=get_time_payload)
+    return {"status": "complete", "results": results}
+
+
+# 3. ADD THE UWSGI RESTART (Inside bulk_config_update)
+@router.put("/bulk/config")
+async def bulk_config_update(req: BulkConfigRequest):
+    req_dict = req.model_dump(exclude={"target_macs"}, exclude_unset=True)
+    
+    general_keys = ["TIME_ZONE", "NTP_SERVER"] # <--- Added NTP_SERVER here
+    sync_keys = ["SYNC_ENABLED", "SYNC_INTERVAL", "remote_type", "destination_path", "host", "port", "user", "password"]
+    
+    general_payload = {k: v for k, v in req_dict.items() if k in general_keys}
+    sync_payload = {k: v for k, v in req_dict.items() if k in sync_keys}
+    
+    results = []
+    successful_macs = set() # Track who got updated
+    
+    if general_payload:
+        def get_gen_payload(mac, state): return general_payload
+        res_gen = await broadcast_to_nodes(req.target_macs, "PUT", "config", get_payload_fn=get_gen_payload)
+        results.extend(res_gen)
+        successful_macs.update([r["mac"] for r in res_gen if r["status"] == "success"])
+        
+    if sync_payload:
+        def get_sync_payload(mac, state): return sync_payload
+        res_sync = await broadcast_to_nodes(req.target_macs, "POST", "sync/config", get_payload_fn=get_sync_payload)
+        results.extend(res_sync)
+        successful_macs.update([r["mac"] for r in res_sync if r["status"] == "success"])
+        
+    # --- NEW: RESTART uWSGI ON UPDATED NODES ---
+    if successful_macs:
+        # Give the file system a split second to flush writes
+        await asyncio.sleep(0.5) 
+        # Broadcast the restart command (expect timeouts as the service dies and resurrects)
+        await broadcast_to_nodes(list(successful_macs), "GET", "restart_service", timeout=1.0)
+        
+    return {"status": "complete", "results": results}
+
+class ExperimentLaunchRequest(BaseModel):
+    name: str = Field(default=None, max_length=16)
+    description: str = ""   
+    target_macs: List[str]
+    start_time: str
+    end_time: str
+    interval: int = Field(ge=5) # Minimum 5 minutes
+    ir_enabled: bool = True
+    cameras: List[int] = [] # Empty means auto-detect all available
+    strict_mode: bool = True # If true, aborts if ANY node fails pre-flight
+
+def parse_dt(dt_str: str) -> datetime:
+    clean_str = dt_str.replace("T", " ")
+    if len(clean_str) == 16: clean_str += ":00"
+    return datetime.strptime(clean_str[:19], "%Y-%m-%d %H:%M:%S")
+
+@router.post("/experiment/launch")
+async def launch_global_experiment(req: ExperimentLaunchRequest):
+    try:
+        req_start = parse_dt(req.start_time)
+        req_end = parse_dt(req.end_time)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
+
+    # Basic Math
+    if req_end < (req_start + timedelta(minutes=5)):
+        raise HTTPException(status_code=422, detail="Experiment duration must be > 5 minutes.")
+        
+    total_mins = (req_end - req_start).total_seconds() / 60.0
+    expected_per_cam = int(total_mins / req.interval)
+    IMAGE_SIZE_MB = 3.0 # Calibrated to 3MB per high-res picture
+
+    valid_nodes = []
+    
+    # ==========================================
+    # PHASE 1: STRICT PRE-FLIGHT VALIDATION
+    # ==========================================
+    for mac in req.target_macs:
+        if mac not in LIVE_FLEET_STATE:
+            if req.strict_mode:
+                raise HTTPException(status_code=409, detail=f"Node {mac} is offline. Aborting launch.")
+            continue # Skip offline node
+            
+        node = LIVE_FLEET_STATE[mac]
+        hostname = node["identity"]["hostname"]
+        
+        # 1A. Hardware Validation
+        available_cams = [int(c) for c in node.get("cam_reports", {}).keys()]
+        if not available_cams:
+            raise HTTPException(status_code=409, detail=f"[{hostname}] reports 0 connected cameras.")
+            
+        target_cameras = req.cameras if req.cameras else available_cams
+        for req_cam in target_cameras:
+            if req_cam not in available_cams:
+                raise HTTPException(status_code=409, detail=f"[{hostname}] lacks physical Camera {req_cam}.")
+
+        # 1B. Storage Validation
+        required_mb = expected_per_cam * len(target_cameras) * IMAGE_SIZE_MB
+        required_gb = required_mb / 1024.0
+        free_gb = node.get("system_health", {}).get("storage", {}).get("free_gb", 0)
+        
+        if required_gb >= free_gb:
+            raise HTTPException(
+                status_code=409, 
+                detail=f"[{hostname}] Insufficient storage! Needs ~{required_gb:.2f}GB, but only has {free_gb}GB free."
+            )
+
+        # 1C. Scheduling Conflict Detection
+        for job_data in node.get("jobs", {}).values():
+            if job_data.get("status") in ["CANCELLED", "ERROR", "FINISHED"]: 
+                continue
+            
+            job_start = parse_dt(job_data["start"])
+            job_end_str = job_data.get("end", "Unknown")
+            job_end = parse_dt(job_end_str) if job_end_str != "Unknown" else job_start + timedelta(days=7)
+            
+            # Check for timeline overlap
+            if max(req_start, job_start) < min(req_end, job_end):
+                raise HTTPException(
+                    status_code=409, 
+                    detail=f"[{hostname}] Timeline conflict with existing job '{job_data.get('name', 'Job')}'."
+                )
+
+        # Node passed all checks!
+        valid_nodes.append({
+            "mac": mac, 
+            "ip": node["identity"]["ip"], 
+            "hostname": hostname,
+            "target_cameras": target_cameras
+        })
+
+    if not valid_nodes:
+        raise HTTPException(status_code=400, detail="No valid nodes remained to launch against.")
+
+    # ==========================================
+    # PHASE 2: DATABASE COHORT CREATION
+    # ==========================================
+    # We create the cohort *before* broadcasting so we have a valid ID to attach runs to.
+    try:
+        with Session(engine) as session:
+            new_cohort = FleetCohort(
+                name=req.name, 
+                interval_minutes=req.interval, 
+                ir_enabled=req.ir_enabled,
+                launched_at=datetime.utcnow()
+            )
+            session.add(new_cohort)
+            session.commit()
+            session.refresh(new_cohort)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Master DB Failure: {e}")
+
+    # ==========================================
+    # PHASE 3: FLEET BROADCAST
+    # ==========================================
+    successes = []
+    failures = []
+    
+    async with httpx.AsyncClient() as client:
+        async def launch_on_node(node_info):
+            payload = {
+                "name": req.name,
+                "desc": req.description,  
+                "start": req_start.strftime("%Y-%m-%d %H:%M:%S"),
+                "end": req_end.strftime("%Y-%m-%d %H:%M:%S"),
+                "interval": req.interval,
+                "ir": req.ir_enabled,
+                "cameras": node_info["target_cameras"]
+            }
+            try:
+                # Calls Pi API -> POST /
+                res = await client.post(f"http://{node_info['ip']}/api/", json=payload, timeout=5.0)
+                if res.status_code == 201:
+                    local_exp_id = res.json().get("expid")
+                    return {"status": "success", "mac": node_info["mac"], "local_id": local_exp_id, "expected": expected_per_cam * len(node_info["target_cameras"])}
+                else:
+                    return {"status": "error", "hostname": node_info["hostname"], "msg": f"Rejected: {res.text}"}
+            except Exception as e:
+                return {"status": "error", "hostname": node_info["hostname"], "msg": f"Network drop: {str(e)}"}
+        
+        # Execute concurrently
+        broadcast_results = await asyncio.gather(*[launch_on_node(n) for n in valid_nodes])
+        
+        for r in broadcast_results:
+            if r["status"] == "success": successes.append(r)
+            else: failures.append(f"[{r['hostname']}] {r['msg']}")
+
+    # ==========================================
+    # PHASE 4: DATABASE RECORD LINKING
+    # ==========================================
+    try:
+        with Session(engine) as session:
+            for s in successes:
+                run = ExperimentRun(
+                    cohort_id=new_cohort.id,
+                    module_mac=s["mac"],
+                    local_exp_id=s["local_id"],
+                    status="SCHEDULED",
+                    expected_total=s["expected"],
+                    start_time=req_start.strftime("%Y-%m-%d %H:%M:%S"), 
+                    end_time=req_end.strftime("%Y-%m-%d %H:%M:%S")      
+                )
+                session.add(run)
+            session.commit()
+    except Exception as e:
+        # Note: If this fails, the experiment is still running on the Pis, but DB tracking is fractured.
+        failures.append(f"Master DB Error saving run records: {e}")
+
+    # ==========================================
+    # PHASE 5: RESPONSE
+    # ==========================================
+    if failures:
+        # Return a 200/207-style response if some succeeded, so the frontend knows it was a partial success
+        return {
+            "status": "partial_error", 
+            "message": f"Broadcast complete, but {len(failures)} errors occurred.", 
+            "failures": failures
+        }
+    
+    return {
+        "status": "success", 
+        "message": f"Global Experiment '{req.name}' safely launched on {len(successes)} modules."
+    }
+    
+# --- DATABASE & HISTORY VIEWS ---
+
+@router.get("/db/experiments")
+async def get_db_experiments():
+    """Powers the 'Experiment Status' View (Cohorts)."""
+    with Session(engine) as session:
+        cohorts = session.exec(select(FleetCohort).order_by(FleetCohort.id.desc())).all()
+        result = []
+        for c in cohorts:
+            runs = session.exec(select(ExperimentRun).where(ExperimentRun.cohort_id == c.id)).all()
+            if not runs: continue 
+            
+            total_expected = sum([r.expected_total or 0 for r in runs])
+            total_taken = sum([r.taken_so_far or 0 for r in runs])
+            missed = sum([r.missed_frames or 0 for r in runs])
+            
+            statuses = [r.status for r in runs]
+            if "RUNNING" in statuses: global_status = "RUNNING"
+            elif "ERROR" in statuses: global_status = "ERROR"
+            else: global_status = "FINISHED"
+
+            nodes_data = []
+            for r in runs:
+                mod = session.get(RobotModule, r.module_mac)
+                display_name = mod.alias if (mod and mod.alias) else (mod.hostname if mod else "Unknown Node")
+                
+                nodes_data.append({
+                    "mac": r.module_mac, 
+                    "hostname": display_name,
+                    "ip": mod.ip_address if mod else None,
+                    "local_exp_id": r.local_exp_id,
+                    "status": r.status, 
+                    "taken": r.taken_so_far or 0, 
+                    "expected": r.expected_total or 0, 
+                    "missed": r.missed_frames or 0,
+                    "start_time": r.start_time, 
+                    "end_time": r.end_time,     
+                    "message": r.message        
+                })
+
+            if isinstance(c.launched_at, str):
+                launch_str = c.launched_at[:16]
+            else:
+                launch_str = c.launched_at.strftime("%Y-%m-%d %H:%M")
+
+            result.append({
+                "id": c.id, "name": c.name, "launched_at": launch_str,
+                "interval": c.interval_minutes or 0, "node_count": len(runs), "global_status": global_status,
+                "progress": {"taken": total_taken, "expected": total_expected, "missed": missed},
+                "nodes": nodes_data
+            })
+        return result
+
+@router.post("/db/sync_archives")
+async def sync_archives_to_db():
+    """Connects to all known nodes, downloads their history, and backfills the Master DB accurately."""
+    with Session(engine) as session:
+        known_macs = [m.mac_address for m in session.exec(select(RobotModule)).all()]
+        
+    results = await broadcast_to_nodes(known_macs, "GET", "history")
+    
+    updates_count = 0
+    new_runs_count = 0
+    
+    with Session(engine) as session:
+        for res in results:
+            if res["status"] != "success" or not res.get("data"): continue
+            
+            mac = res["mac"]
+            history_data = res["data"]
+            
+            for local_exp_id, job_data in history_data.items():
+                existing_run = session.exec(select(ExperimentRun).where(ExperimentRun.local_exp_id == local_exp_id)).first()
+                
+                expected = int(job_data.get("expected_pictures") or 0)
+                taken = int(job_data.get("taken_pictures") or 0)
+                start_str = job_data.get("start", "")
+                end_str = job_data.get("end", "")
+                msg_str = job_data.get("message", "")
+                status_str = job_data.get("status", "FINISHED")
+
+                # --- 1. UPDATE EXISTING RUNS ---
+                if existing_run:
+                    existing_run.expected_total = expected
+                    existing_run.taken_so_far = taken
+                    existing_run.missed_frames = max(0, expected - taken)
+                    existing_run.status = status_str
+                    
+                    if start_str: existing_run.start_time = start_str
+                    if end_str: existing_run.end_time = end_str
+                    if msg_str: existing_run.message = msg_str
+                    
+                    session.add(existing_run)
+                    updates_count += 1
+                    continue
+                
+                # --- 2. CREATE NEW COHORTS (SPLIT BY TIME) ---
+                cohort_name = job_data.get("name") or f"Orphan - {local_exp_id}"
+                
+                try:
+                    launched_dt = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    launched_dt = datetime.utcnow()
+                    
+                # Find all existing cohorts with this exact name
+                cohorts_with_name = session.exec(select(FleetCohort).where(FleetCohort.name == cohort_name)).all()
+                
+                matching_cohort = None
+                for c in cohorts_with_name:
+                    # If launched within 2 minutes of each other, it's the same global run!
+                    delta = abs((c.launched_at - launched_dt).total_seconds())
+                    if delta < 120:
+                        matching_cohort = c
+                        break
+                        
+                # If no matching timeframe was found, spawn a brand new separate cohort
+                if not matching_cohort:
+                    matching_cohort = FleetCohort(
+                        name=cohort_name,
+                        interval_minutes=int(job_data.get("interval") or 15),
+                        ir_enabled=False,
+                        launched_at=launched_dt
+                    )
+                    session.add(matching_cohort)
+                    session.commit()
+                    session.refresh(matching_cohort)
+                    
+                # --- 3. CREATE THE RUN ---
+                new_run = ExperimentRun(
+                    cohort_id=matching_cohort.id,
+                    module_mac=mac,
+                    local_exp_id=local_exp_id,
+                    status=status_str,
+                    expected_total=expected,
+                    taken_so_far=taken,
+                    missed_frames=max(0, expected - taken),
+                    start_time=start_str,
+                    end_time=end_str,
+                    message=msg_str
+                )
+                session.add(new_run)
+                new_runs_count += 1
+                
+        session.commit()
+        
+    return {"status": "success", "message": f"Sync complete. Added {new_runs_count} new runs and updated {updates_count} existing runs."}
+
+
+@router.get("/db/experiments")
+async def get_db_experiments():
+    with Session(engine) as session:
+        cohorts = session.exec(select(FleetCohort).order_by(FleetCohort.id.desc())).all()
+        result = []
+        for c in cohorts:
+            runs = session.exec(select(ExperimentRun).where(ExperimentRun.cohort_id == c.id)).all()
+            if not runs: continue 
+            
+            total_expected = sum([r.expected_total or 0 for r in runs])
+            total_taken = sum([r.taken_so_far or 0 for r in runs])
+            missed = sum([r.missed_frames or 0 for r in runs])
+            
+            statuses = [r.status for r in runs]
+            if "RUNNING" in statuses: global_status = "RUNNING"
+            elif "ERROR" in statuses: global_status = "ERROR"
+            else: global_status = "FINISHED"
+
+            nodes_data = []
+            for r in runs:
+                mod = session.get(RobotModule, r.module_mac)
+                display_name = mod.alias if (mod and mod.alias) else (mod.hostname if mod else "Unknown Node")
+                
+                nodes_data.append({
+                    "mac": r.module_mac, 
+                    "hostname": display_name,
+                    "ip": mod.ip_address if mod else None,
+                    "local_exp_id": r.local_exp_id,
+                    "status": r.status, 
+                    "taken": r.taken_so_far or 0, 
+                    "expected": r.expected_total or 0, 
+                    "missed": r.missed_frames or 0,
+                    "start_time": r.start_time, # <--- NEW
+                    "end_time": r.end_time,     # <--- NEW
+                    "message": r.message        # <--- NEW
+                })
+
+            if isinstance(c.launched_at, str):
+                launch_str = c.launched_at[:16]
+            else:
+                launch_str = c.launched_at.strftime("%Y-%m-%d %H:%M")
+
+            result.append({
+                "id": c.id, "name": c.name, "launched_at": launch_str,
+                "interval": c.interval_minutes or 0, "node_count": len(runs), "global_status": global_status,
+                "progress": {"taken": total_taken, "expected": total_expected, "missed": missed},
+                "nodes": nodes_data
+            })
+        return result
+
+@router.get("/db/modules/{mac}/history")
+async def get_module_history(mac: str):
+    """Powers the 'History Ledger' modal for a single module."""
+    with Session(engine) as session:
+        runs = session.exec(select(ExperimentRun).where(ExperimentRun.module_mac == mac)).all()
+        history_runs = []
+        for r in runs:
+            c = session.get(FleetCohort, r.cohort_id)
+            history_runs.append({
+                "name": c.name if c else "Unknown Cohort",
+                "status": r.status,
+                "taken": r.taken_so_far,
+                "expected": r.expected_total,
+                "missed": r.missed_frames,
+                "local_exp_id": r.local_exp_id,
+                "start": r.start_time,
+                "end": r.end_time,
+                "message": r.message
+            })
+            
+        return {"runs": sorted(history_runs, key=lambda x: x["start"], reverse=True)}
+
+@router.delete("/db/purge")
+async def purge_all_history():
+    """WIPES the Master Database of all experiments (Does not affect physical Pi storage)."""
+    with Session(engine) as session:
+        runs = session.exec(select(ExperimentRun)).all()
+        for r in runs: session.delete(r)
+        
+        cohorts = session.exec(select(FleetCohort)).all()
+        for c in cohorts: session.delete(c)
+        
+        session.commit()
+        return {"status": "success", "message": "Master Database history has been completely purged."}    
+
+class AliasUpdateRequest(BaseModel):
+    alias: str
+
+@router.put("/db/modules/{mac}/alias")
+async def update_module_alias(mac: str, req: AliasUpdateRequest):
+    """Assigns a custom, human-readable name to a specific module."""
+    with Session(engine) as session:
+        mod = session.get(RobotModule, mac)
+        if not mod:
+            raise HTTPException(status_code=404, detail="Module not found in DB.")
+        mod.alias = req.alias.strip() if req.alias.strip() else None
+        session.add(mod)
+        session.commit()
+        return {"status": "success", "alias": mod.alias}
+
+@router.post("/bulk/time_sync_manual")
+async def sync_time_for_manual_nodes(req: BulkActionRequest):
+    """Pushes Master time ONLY to nodes operating in Manual Time mode."""
+    with Session(engine) as session:
+        db_modules = session.exec(select(RobotModule).where(RobotModule.mac_address.in_(req.target_macs))).all()
+        
+    # Filter for nodes that are strictly NOT using NTP
+    manual_macs = [m.mac_address for m in db_modules if not m.use_ntp]
+    
+    if not manual_macs:
+        return {"status": "success", "message": "None of the selected nodes are in Manual mode. NTP handles them automatically."}
+
+    master_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    base_payload = {"mode": "manual", "date": master_time_str}
+    
+    def get_time_payload(mac, state): return base_payload
+    
+    results = await broadcast_to_nodes(manual_macs, "POST", "config/time", get_payload_fn=get_time_payload)
+    return {"status": "complete", "results": results, "message": f"Time synced to {len(manual_macs)} offline/manual modules."}
+
+@router.post("/bulk/sync/test")
+async def bulk_sync_test(req: BulkSyncTestRequest):
+    """Broadcasts test credentials to modules without saving them."""
+    payload = req.model_dump(exclude={"target_macs"})
+    
+    def get_test_payload(mac, state):
+        return payload
+
+    results = await broadcast_to_nodes(req.target_macs, "POST", "sync/test", get_payload_fn=get_test_payload)
+    return {"status": "complete", "results": results}
+
+@router.post("/bulk/sync/trigger")
+async def bulk_sync_trigger(req: BulkActionRequest):
+    """Forces an immediate one-shot background sync on the selected modules."""
+    results = await broadcast_to_nodes(req.target_macs, "POST", "sync/trigger")
+    return {"status": "complete", "results": results}
+
+@router.post("/bulk/sync/cancel")
+async def bulk_sync_cancel(req: BulkActionRequest):
+    """Emergency abort for active sync operations."""
+    results = await broadcast_to_nodes(req.target_macs, "POST", "sync/cancel")
+    return {"status": "complete", "results": results}

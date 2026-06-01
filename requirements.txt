@@ -1,0 +1,12 @@
+# Web Framework & Server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Database ORM
+sqlmodel>=0.0.8
+
+# Templating for SSR Frontend
+jinja2>=3.1.2
+
+# Async HTTP Client (Crucial for the 1-second "Smart Sweep" timeouts)
+httpx>=0.24.1

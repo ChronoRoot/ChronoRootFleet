@@ -1,0 +1,66 @@
+
+<div class="d-flex justify-content-between align-items-center mb-3 border-bottom pb-3">
+    <div class="d-flex align-items-center">
+        <button class="btn btn-sm btn-outline-info font-weight-bold mr-3" onclick="triggerDiscovery()" id="btn-discover">
+            <i class="fas fa-satellite-dish"></i> Discover Nodes
+        </button>
+    </div>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div class="d-flex shadow-sm filter-bar align-items-center">
+        <button class="btn btn-sm btn-filter active" onclick="filterView('ALL', this)">All <span id="count-ALL" class="badge bg-secondary text-white ms-1 rounded-pill">0</span></button>
+        <button class="btn btn-sm btn-filter" onclick="filterView('RUNNING', this)">Running <span id="count-RUNNING" class="badge bg-primary text-white ms-1 rounded-pill">0</span></button>
+        <button class="btn btn-sm btn-filter" onclick="filterView('WAITING', this)">Waiting <span id="count-WAITING" class="badge bg-warning text-dark ms-1 rounded-pill">0</span></button>
+        <button class="btn btn-sm btn-filter" onclick="filterView('IDLE', this)">Standby <span id="count-IDLE" class="badge bg-light text-dark border ms-1 rounded-pill">0</span></button>
+        <button class="btn btn-sm btn-filter text-muted" onclick="filterView('OFFLINE', this)">Offline <span id="count-OFFLINE" class="badge bg-dark text-white ms-1 rounded-pill">0</span></button>
+        
+        <button class="btn btn-sm btn-filter text-danger" onclick="filterView('ATTENTION', this)">
+            <i class="fas fa-exclamation-circle"></i> Needs Attention <span id="count-ATTENTION" class="badge bg-danger text-white ms-1 rounded-pill">0</span>
+        </button>
+        
+        <div class="form-check form-switch ms-3 border-start ps-4 py-1">
+            <input class="form-check-input" type="checkbox" id="hideOfflineToggle" onchange="fetchFleetData()">
+            <label class="form-check-label small text-muted font-weight-bold mt-1" for="hideOfflineToggle" style="cursor: pointer;">Hide Offline</label>
+        </div>
+    </div>
+
+    <div class="bulk-action-bar d-flex align-items-center gap-2">
+        <span class="text-muted small mr-3">Selected: <strong id="selected-count" class="text-dark">0</strong></span>
+        <button class="btn btn-sm btn-outline-secondary font-weight-bold" onclick="executeBulk('DIAGNOSTIC')"><i class="fas fa-stethoscope"></i> Diagnostics</button>
+        <button class="btn btn-sm btn-outline-danger font-weight-bold" onclick="executeBulk('REBOOT')"><i class="fas fa-power-off"></i> Reboot</button>
+        <button class="btn btn-sm btn-dark font-weight-bold ml-2" onclick="openConfigModal()"><i class="fas fa-cogs"></i> Configure</button>
+        <button class="btn btn-sm btn-primary font-weight-bold" onclick="openExperimentModal()"><i class="fas fa-flask"></i> Launch Global Exp</button>
+    </div>    
+</div>
+
+<script>
+    async function triggerDiscovery() {
+        const btn = document.getElementById('btn-discover');
+        const originalText = btn.innerHTML;
+        
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Scanning Subnet...';
+        
+        try {
+            const res = await fetch('/api/fleet/discover', { method: 'POST' });
+            if (!res.ok) {
+                const textError = await res.text();
+                throw new Error(textError);
+            }
+            const data = await res.json();
+            showToast(`<i class="fas fa-satellite-dish"></i> ${data.message}`, 'success');
+            
+            let lastScanEl = document.getElementById('last-discovery-time');
+            if (lastScanEl) lastScanEl.innerText = "Last Discovery: " + new Date().toLocaleTimeString();
+            
+            if(typeof fetchFleetData === 'function') fetchFleetData();
+        } catch(e) {
+            console.error("Discovery Error:", e);
+            showToast(`<i class="fas fa-exclamation-triangle"></i> Failed to scan subnet.`, 'danger');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+</script>

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    /* ==========================================
+       SHARED DASHBOARD STYLES
+       ========================================== */
+    .table-dense th, .table-dense td { padding: 1rem 1.25rem; vertical-align: middle; border-top: 1px solid #eaecf4; }
+    .table-dense thead th { border-bottom: 2px solid #eaecf4; text-transform: uppercase; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.5px; color: #858796; background-color: #fff; }
+    .row-hover:hover { background-color: #f1f3f9; transition: background-color 0.2s ease; }
+    
+    .mini-bar-container { height: 6px; background-color: #eaecf4; border-radius: 3px; overflow: hidden; width: 100%; }
+    .mini-bar { height: 100%; transition: width 0.5s ease; }
+    
+    .hw-detail { font-size: 0.85rem; line-height: 1.4; color: #5a5c69; }
+    
+    .badge-soft-success { background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
+    .badge-soft-danger { background-color: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
+    .badge-soft-warning { background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5; }
+    
+    .bulk-action-bar { background: white; border: 1px solid #eaecf4; border-radius: 0.5rem; padding: 0.6rem 1.2rem; box-shadow: 0 0.15rem 1.75rem 0 rgba(58,59,69,0.1); }
+    
+    .filter-bar { background-color: #fff; border: 1px solid #eaecf4; padding: 0.25rem; border-radius: 50rem; }
+    .btn-filter { color: #6c757d; font-weight: 600; border-radius: 50rem; padding: 0.4rem 1.25rem; border: none; background: transparent; transition: all 0.2s ease; }
+    .btn-filter:hover { color: #4e73df; }
+    .btn-filter.active { background-color: #e3e6f0; color: #4e73df; font-weight: 700; box-shadow: inset 0 1px 2px rgba(0,0,0,0.05); }
+
+    .input-group-text { cursor: pointer; background-color: #f8f9fc; }
+    .input-group-text:hover { background-color: #eaecf4; }
+</style>
+
+<script>
+    // GLOBAL STATE: Shared across all components
+    let selectedMacs = new Set();
+    let currentView = 'ALL';
+</script>
+
+<div class="container-fluid py-4 px-4">
+    {% include 'components/_stat_cards.html' %}
+
+    {% include 'components/_filter_bar.html' %}
+
+    {% include 'components/_table_fleet.html' %}
+</div>
+
+{% include 'components/_modal_exp.html' %}
+{% include 'components/_modal_config.html' %}  ```
+
+{% endblock %}
