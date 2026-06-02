@@ -18,16 +18,24 @@ def digest_node_state(mac: str, raw: dict, db_mod: Optional[RobotModule], master
         hardware_desc = "Unregistered Node"
         time_mode = "Unknown"
 
-    # --- OFFLINE FAST RETURN (Now preserves config data) ---
+    # --- OFFLINE FAST RETURN (Now preserves config data and adds default sync state) ---
     if not is_online:
         return {
             "mac": mac, "hostname": display_name, "raw_hostname": hostname, "ip": ip, "is_online": False,
+            "uptime": "OFF", 
             "primary_state": "OFFLINE", "needs_attention": True,
             "issues": ["Node Offline"], "hardware_desc": hardware_desc, # Preserved!
             "last_seen": db_mod.last_seen.strftime("%Y-%m-%d %H:%M:%S") if db_mod and db_mod.last_seen else "Unknown",
             "storage_pct": 0, "ir_status": "UNKNOWN", "cams_ok": 0, "cams_total": 0,
             "time_sync_status": "Offline", "time_mode": time_mode, "drift_seconds": "N/A", "system_time": "N/A",
-            "is_locked": False, "lock_owner": "None", "has_job": False, "is_diagnosing": False
+            "is_locked": False, "lock_owner": "None", "has_job": False, "is_diagnosing": False,
+            "sync_status": {
+                "sync_enabled": False,
+                "is_syncing": False,
+                "status_msg": "Offline",
+                "last_success": "Never",
+                "last_error": None
+            }
         }
 
     # --- ONLINE LOGIC ---
@@ -105,6 +113,16 @@ def digest_node_state(mac: str, raw: dict, db_mod: Optional[RobotModule], master
             time_sync_status = "Error"
             drift_seconds_val = f"Err: {str(e)}"
 
+    # 7. Extract Sync Data
+    raw_sync = raw.get("sync", {})
+    sync_status = {
+        "sync_enabled": raw_sync.get("sync_enabled", False),
+        "is_syncing": raw_sync.get("is_syncing", False),
+        "status_msg": raw_sync.get("status_msg", "Standby"),
+        "last_success": raw_sync.get("last_success", "Never"),
+        "last_error": raw_sync.get("last_error", None)
+    }
+
     return {
         "mac": mac, "hostname": display_name, "raw_hostname": hostname, "ip": ip, "is_online": True,
         "primary_state": primary_state, "needs_attention": has_warnings, "is_diagnosing": is_diagnosing,
@@ -121,5 +139,7 @@ def digest_node_state(mac: str, raw: dict, db_mod: Optional[RobotModule], master
         "local_exp_id": local_exp_id, "progress_pct": progress_pct,
         "taken": taken, "expected": expected,
         "last_pic_time": last_pic[11:19] if last_pic != "Never" else "Never",
-        "next_pic_time": next_pic[11:19] if next_pic != "None" else "None"
+        "next_pic_time": next_pic[11:19] if next_pic != "None" else "None",
+        "uptime": raw.get("uptime", "Unknown"), # <--- ADD THIS
+        "sync_status": sync_status
     }

@@ -43,18 +43,6 @@ async def get_digested_node_state(mac: str):
         
     # Pass the data through our single source of truth
     return digest_node_state(mac, raw, db_mod, master_time_obj)
-    
-@router.get("/{mac}/config")
-async def get_node_config(mac: str):
-    """Fetches the current user_config.py state from a specific Pi."""
-    ip = get_node_ip(mac)
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(f"http://{ip}/api/config", timeout=3.0)
-            res.raise_for_status()
-            return res.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to fetch config from {ip}: {e}")
 
 @router.put("/{mac}/config")
 async def update_node_config(mac: str, config_data: ConfigUpdateRequest):
@@ -71,26 +59,6 @@ async def update_node_config(mac: str, config_data: ConfigUpdateRequest):
             return res.json()
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to apply config to {ip}: {e}")
-
-@router.post("/{mac}/time")
-async def sync_node_time(mac: str, time_data: TimeSyncNodeRequest):
-    """Forces the node to sync its time based on the Master's instructions."""
-    ip = get_node_ip(mac)
-    payload = time_data.model_dump(exclude_unset=True)
-    
-    # Auto-fill manual date with Master's time if missing
-    if time_data.mode == "manual" and not time_data.date_str:
-        payload["date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    elif "date_str" in payload:
-        payload["date"] = payload.pop("date_str")
-
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.post(f"http://{ip}/api/config/time", json=payload, timeout=5.0)
-            res.raise_for_status()
-            return res.json()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Time sync failed on {ip}: {e}")
 
 @router.post("/{mac}/diagnostic")
 async def trigger_node_diagnostic(mac: str):

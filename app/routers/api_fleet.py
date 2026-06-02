@@ -26,6 +26,7 @@ class BulkTimeSyncRequest(BulkActionRequest):
 class BulkConfigRequest(BulkActionRequest):
     TIME_ZONE: Optional[str] = None
     NTP_SERVER: Optional[str] = None   
+    USE_NTP: Optional[bool] = None    
     SYNC_ENABLED: Optional[bool] = None
     SYNC_INTERVAL: Optional[int] = Field(None, ge=1)
     remote_type: Optional[str] = Field(None, pattern="^(local|sftp|ftp|advanced)$")
@@ -71,7 +72,13 @@ async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_pa
                     res = await client.get(f"http://{ip}/api/{endpoint}", **req_kwargs)
                     
                 res.raise_for_status()
-                return {"mac": mac, "status": "success", "data": res.json() if res.content else {}}
+                
+                try:
+                    resp_data = res.json() if res.content else {}
+                except Exception:
+                    resp_data = {"text": res.text}
+
+                return {"mac": mac, "status": "success", "data": resp_data}
             except Exception as e:
                 return {"mac": mac, "status": "error", "message": str(e)}
             
@@ -131,33 +138,41 @@ async def bulk_time_sync(req: BulkTimeSyncRequest):
 async def bulk_config_update(req: BulkConfigRequest):
     req_dict = req.model_dump(exclude={"target_macs"}, exclude_unset=True)
     
-    general_keys = ["TIME_ZONE", "NTP_SERVER"] # <--- Added NTP_SERVER here
-    sync_keys = ["SYNC_ENABLED", "SYNC_INTERVAL", "remote_type", "destination_path", "host", "port", "user", "password"]
-    
+    # --- 1. Map General System Keys ---
+    general_keys = ["TIME_ZONE", "NTP_SERVER", "USE_NTP"] # <--- FIXED: Added USE_NTP
     general_payload = {k: v for k, v in req_dict.items() if k in general_keys}
-    sync_payload = {k: v for k, v in req_dict.items() if k in sync_keys}
     
+    # --- 2. Map Sync Keys (Translate Case for Flask API) ---
+    sync_payload = {}
+    if "SYNC_ENABLED" in req_dict: sync_payload["sync_enabled"] = req_dict["SYNC_ENABLED"]
+    if "SYNC_INTERVAL" in req_dict: sync_payload["sync_interval"] = req_dict["SYNC_INTERVAL"]
+    
+    for k in ["remote_type", "destination_path", "host", "port", "user", "password"]:
+        if k in req_dict: sync_payload[k] = req_dict[k]
+        
     results = []
-    successful_macs = set() # Track who got updated
+    successful_macs = set()
     
+    # --- 3. Dispatch General Config ---
     if general_payload:
         def get_gen_payload(mac, state): return general_payload
         res_gen = await broadcast_to_nodes(req.target_macs, "PUT", "config", get_payload_fn=get_gen_payload)
         results.extend(res_gen)
         successful_macs.update([r["mac"] for r in res_gen if r["status"] == "success"])
         
+    # --- 4. Dispatch Sync Config ---
     if sync_payload:
         def get_sync_payload(mac, state): return sync_payload
         res_sync = await broadcast_to_nodes(req.target_macs, "POST", "sync/config", get_payload_fn=get_sync_payload)
         results.extend(res_sync)
         successful_macs.update([r["mac"] for r in res_sync if r["status"] == "success"])
         
-    # --- NEW: RESTART uWSGI ON UPDATED NODES ---
+    # --- 5. Restart Updated Nodes ---
     if successful_macs:
         # Give the file system a split second to flush writes
         await asyncio.sleep(0.5) 
-        # Broadcast the restart command (expect timeouts as the service dies and resurrects)
-        await broadcast_to_nodes(list(successful_macs), "GET", "restart_service", timeout=1.0)
+        # Expect timeouts here as the service dies and resurrects
+        await broadcast_to_nodes(list(successful_macs), "GET", "restart_service", timeout=1.5)
         
     return {"status": "complete", "results": results}
 
@@ -525,9 +540,9 @@ async def get_db_experiments():
                     "taken": r.taken_so_far or 0, 
                     "expected": r.expected_total or 0, 
                     "missed": r.missed_frames or 0,
-                    "start_time": r.start_time, # <--- NEW
-                    "end_time": r.end_time,     # <--- NEW
-                    "message": r.message        # <--- NEW
+                    "start_time": r.start_time, 
+                    "end_time": r.end_time,     
+                    "message": r.message        
                 })
 
             if isinstance(c.launched_at, str):
@@ -545,7 +560,7 @@ async def get_db_experiments():
 
 @router.get("/db/modules/{mac}/history")
 async def get_module_history(mac: str):
-    """Powers the 'History Ledger' modal for a single module."""
+    """Powers the 'Experiment History' modal for a single module."""
     with Session(engine) as session:
         runs = session.exec(select(ExperimentRun).where(ExperimentRun.module_mac == mac)).all()
         history_runs = []
@@ -621,7 +636,13 @@ async def bulk_sync_test(req: BulkSyncTestRequest):
     def get_test_payload(mac, state):
         return payload
 
-    results = await broadcast_to_nodes(req.target_macs, "POST", "sync/test", get_payload_fn=get_test_payload)
+    results = await broadcast_to_nodes(
+        req.target_macs, 
+        "POST", 
+        "sync/test", 
+        get_payload_fn=get_test_payload,
+        timeout=15.0 
+    )
     return {"status": "complete", "results": results}
 
 @router.post("/bulk/sync/trigger")

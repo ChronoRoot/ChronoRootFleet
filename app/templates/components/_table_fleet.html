@@ -19,11 +19,11 @@
   <div class="modal-dialog modal-lg">
     <div class="modal-content shadow">
       <div class="modal-header bg-dark text-white border-0 py-3">
-        <h5 class="modal-title"><i class="fas fa-server"></i> <span id="hist-hostname"></span> History Ledger</h5>
+        <h5 class="modal-title"><i class="fas fa-server"></i> <span id="hist-hostname"></span> Experiment History</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body bg-light" style="max-height: 70vh; overflow-y: auto;">
-        <h6 class="font-weight-bold text-uppercase text-muted small"><i class="fas fa-flask"></i> Experiment Ledger</h6>
+        <h6 class="font-weight-bold text-uppercase text-muted small"><i class="fas fa-flask"></i> Experiments</h6>
         <div class="bg-white border rounded shadow-sm mb-4">
             <table class="table table-sm table-hover mb-0">
                 <thead class="bg-light text-muted small">
@@ -76,10 +76,12 @@
             let nodesList = Array.isArray(rawData) ? rawData : (rawData.nodes || []);
             let masterTime = rawData.master_time || "N/A";
             
-            document.getElementById('last-sync-time').innerHTML = `
-                <span class="text-muted me-3" style="margin-right: 15px;">Last scan: ${new Date().toLocaleTimeString()}</span>
-                <span class="badge bg-primary text-white px-2 py-1 shadow-sm"><i class="fas fa-server"></i> Master Time: ${masterTime}</span>
-            `;
+            if(document.getElementById('last-sync-time')) {
+                document.getElementById('last-sync-time').innerHTML = `
+                    <span class="text-muted me-3" style="margin-right: 15px;">Last scan: ${new Date().toLocaleTimeString()}</span>
+                    <span class="badge bg-primary text-white px-2 py-1 shadow-sm"><i class="fas fa-server"></i> Master Time: ${masterTime}</span>
+                `;
+            }
             
             // 1. Initialize Counters
             let counts = { 'ALL': 0, 'RUNNING': 0, 'WAITING': 0, 'IDLE': 0, 'OFFLINE': 0, 'ATTENTION': 0 };
@@ -129,7 +131,7 @@
                             <div class="d-flex flex-column gap-2">
                                 <button class="btn btn-sm btn-outline-secondary w-100 disabled"><i class="fas fa-ban"></i> Offline</button>
                                 <button onclick="showHistory('${node.mac}', '${node.hostname}', '${node.ip}')" class="btn btn-sm btn-light border shadow-sm text-secondary w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> History Ledger
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> Experiment History
                                 </button>
                             </div>
                         </td>
@@ -159,6 +161,14 @@
                     timeBadge = `<span class="text-danger font-weight-bold" title="${driftText}"><i class="fas fa-times-circle"></i> ${node.time_sync_status}<br><small>${readableDrift}</small></span>`;
                 } else {
                     timeBadge = `<span class="text-warning font-weight-bold" title="${node.drift_seconds}"><i class="fas fa-exclamation-triangle"></i> ${node.time_sync_status}</span>`;
+                }
+
+                // --- UPTIME RENDER LOGIC ---
+                let uptimeHtml = '';
+                if (node.uptime && node.uptime !== "Unknown") {
+                    uptimeHtml = `<div class="text-dark font-weight-bold"><i class="fas fa-stopwatch text-secondary"></i> ${node.uptime}</div>`;
+                } else {
+                    uptimeHtml = `<div class="text-muted"><i class="fas fa-stopwatch text-secondary" style="opacity: 0.5;"></i> Unknown</div>`;
                 }
                 
                 let alertHtml = '';
@@ -210,6 +220,33 @@
                     `<span class="text-warning font-weight-bold" title="Owner: ${node.lock_owner}"><i class="fas fa-lock"></i> Locked (${node.lock_owner})</span>` : 
                     `<span class="text-success"><i class="fas fa-check-circle"></i> Free</span>`;
 
+                // --- SYNC RENDER LOGIC ---
+                let syncData = node.sync_status || {};
+                let syncHtml = '';
+
+                if (syncData.is_syncing) {
+                    syncHtml = `
+                        <div class="text-info font-weight-bold text-truncate" title="${syncData.status_msg}">
+                            <i class="fas fa-sync fa-spin"></i> Syncing
+                        </div>
+                        <div class="text-muted small text-truncate">${syncData.status_msg}</div>
+                    `;
+                } else if (syncData.last_error) {
+                    syncHtml = `
+                        <div class="text-danger font-weight-bold"><i class="fas fa-exclamation-triangle"></i> Sync Failed</div>
+                        <div class="text-muted small text-truncate" title="${syncData.last_error}">${syncData.last_error}</div>
+                    `;
+                } else if (syncData.sync_enabled) {
+                    syncHtml = `
+                        <div class="text-success"><i class="fas fa-check-circle"></i> Auto-Sync ON</div>
+                        <div class="text-muted small">Last: ${syncData.last_success || 'Never'}</div>
+                    `;
+                } else {
+                    syncHtml = `
+                        <div class="text-muted"><i class="fas fa-times-circle"></i> Sync OFF</div>
+                    `;
+                }
+
                 html += `
                     <tr class="row-hover">
                         <td class="text-center">
@@ -251,6 +288,16 @@
                                     <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">System Clock</div>
                                     <div>${timeBadge}</div>
                                 </div>
+
+                                <div class="col-6 mb-2">
+                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Network Sync</div>
+                                    <div>${syncHtml}</div>
+                                </div>
+
+                                <div class="col-6 mb-2">
+                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">System Uptime</div>
+                                    <div>${uptimeHtml}</div>
+                                </div>
                                 
                                 <div class="col-12 mt-1 pt-2 border-top d-flex align-items-center">
                                     <div class="text-muted small text-uppercase me-2" style="font-size: 0.65rem; letter-spacing: 0.5px; margin-right: 8px;">Hardware Lock:</div>
@@ -277,8 +324,17 @@
                                 </button>
                                 
                                 <button onclick="showHistory('${node.mac}', '${node.hostname}', '${node.ip}')" class="btn btn-sm btn-light border shadow-sm text-secondary w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> History Ledger
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> Experiment History
                                 </button>
+
+                                <button onclick="triggerSingleSync('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-light border shadow-sm text-info w-100 justify-content-start" ${syncData.is_syncing ? 'disabled' : ''}>
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-cloud-upload-alt"></i></div> Launch Sync
+                                </button>
+
+                                ${syncData.is_syncing ? `
+                                <button onclick="cancelSingleSync('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-outline-danger w-100 justify-content-start mt-1">
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-times"></i></div> Abort Transfer
+                                </button>` : ''}
                             </div>
                         </td>
                     </tr>
@@ -308,8 +364,7 @@
 
     // --- NODE ACTIONS ---
     async function runSingleDiagnostic(mac, hostname) {
-        const confirmed = await asyncConfirm('Run Diagnostic', `Run a hardware diagnostic scan on ${hostname}?`);
-        if(!confirmed) return;
+        if(!confirm(`Run a hardware diagnostic scan on ${hostname}?`)) return;
         try {
             await fetch(`/api/node/${mac}/diagnostic`, { method: 'POST' });
             showToast(`Diagnostic scan started on ${hostname}. Background tests will take a few minutes.`, 'success');
@@ -320,7 +375,8 @@
     }
 
     async function editAlias(mac, currentName) {
-        let newName = await asyncPrompt('Edit Custom Name', `Enter a new custom name for module [${mac}]:`, currentName);
+        let newName = await asyncPrompt("Rename Module", `Enter a new custom name for module [${mac}]:`, currentName);
+        
         if (newName !== null) {
             try {
                 await fetch(`/api/fleet/db/modules/${mac}/alias`, {
@@ -336,16 +392,18 @@
     }
 
     async function executeBulk(action) {
-        if (selectedMacs.size === 0) { showToast("Select at least one module.", 'warning'); return; }
+        if (selectedMacs.size === 0) { 
+            showToast("Select at least one module.", 'warning'); 
+            return; 
+        }
         
-        const isReboot = action === 'REBOOT';
-        const confirmed = await asyncConfirm('Confirm Action', `Send ${action} command to ${selectedMacs.size} modules?`, isReboot);
-        if (!confirmed) return;
+        if(!confirm(`Send ${action} command to ${selectedMacs.size} modules?`)) return;
         
         let endpoint = '';
         if (action === 'DIAGNOSTIC') endpoint = '/api/fleet/bulk/diagnostic';
         if (action === 'REBOOT') endpoint = '/api/fleet/bulk/reboot';
         if (action === 'TIME_SYNC') endpoint = '/api/fleet/bulk/time_sync_manual'; 
+        if (action === 'SYNC') endpoint = '/api/fleet/bulk/sync/trigger'; 
 
         const buttons = document.querySelectorAll('.bulk-action-bar button');
         buttons.forEach(b => b.disabled = true);
@@ -358,27 +416,67 @@
             });
             const result = await response.json();
             showToast(result.message || `${action} broadcast complete.`, 'success');
+            
         } catch(e) { 
             showToast("Action failed to execute.", 'danger');
         } finally {
             buttons.forEach(b => b.disabled = false);
             selectedMacs.clear();
-            document.getElementById('selected-count').innerText = "0";
+            if(document.getElementById('selected-count')) document.getElementById('selected-count').innerText = "0";
             if(document.getElementById('selectAll')) document.getElementById('selectAll').checked = false;
             fetchFleetData();
         }
     }
 
     async function rebootSingleNode(mac, hostname) {
-        const confirmed = await asyncConfirm('Force Reboot', `Are you absolutely sure you want to forcefully reboot ${hostname}?`, true);
-        if(confirmed) {
-            try {
-                await fetch(`/api/node/${mac}/reboot`, { method: 'POST' });
-                showToast(`Reboot command sent to ${hostname}. It will drop offline momentarily.`, 'warning');
-                fetchFleetData();
-            } catch(e) { 
-                showToast(`Failed to contact Master Controller to reboot ${hostname}.`, 'danger'); 
+        if(!confirm(`Are you absolutely sure you want to forcefully reboot ${hostname}?`)) return;
+        try {
+            await fetch(`/api/node/${mac}/reboot`, { method: 'POST' });
+            showToast(`Reboot command sent to ${hostname}. It will drop offline momentarily.`, 'warning');
+            fetchFleetData();
+        } catch(e) { 
+            showToast(`Failed to contact Master Controller to reboot ${hostname}.`, 'danger'); 
+        }
+    }
+
+    // --- SYNC ACTIONS ---
+    async function triggerSingleSync(mac, hostname) {
+        if(!confirm(`Trigger an immediate network transfer on ${hostname}?`)) return;
+        
+        try {
+            const response = await fetch(`/api/fleet/bulk/sync/trigger`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_macs: [mac] })
+            });
+            
+            const result = await response.json();
+            const nodeResult = result.results.find(r => r.mac === mac);
+            
+            if (nodeResult && nodeResult.status === 'success') {
+                showToast(`Sync queued on ${hostname}.`, 'success');
+            } else {
+                showToast(nodeResult?.data?.error || `Failed to trigger sync. Check config.`, 'danger');
             }
+            fetchFleetData();
+        } catch(e) { 
+            showToast(`Failed to reach Master Controller.`, 'danger'); 
+        }
+    }
+
+    async function cancelSingleSync(mac, hostname) {
+        if(!confirm(`Are you sure you want to kill the active network transfer on ${hostname}?`)) return;
+        
+        try {
+            await fetch(`/api/fleet/bulk/sync/cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_macs: [mac] })
+            });
+            showToast(`Abort signal sent to ${hostname}.`, 'warning');
+            fetchFleetData();
+        } catch(e) { 
+            showToast(`Failed to abort sync.`, 'danger'); 
         }
     }
 
@@ -386,7 +484,9 @@
         document.getElementById('hist-hostname').innerText = hostname;
         document.getElementById('hist-runs-body').innerHTML = '<tr><td colspan="5" class="text-center py-3"><i class="fas fa-spinner fa-spin"></i></td></tr>';
         
-        new bootstrap.Modal(document.getElementById('historyModal')).show();
+        if(typeof bootstrap !== 'undefined') {
+            new bootstrap.Modal(document.getElementById('historyModal')).show();
+        }
 
         try {
             const res = await fetch(`/api/fleet/db/modules/${mac}/history`);

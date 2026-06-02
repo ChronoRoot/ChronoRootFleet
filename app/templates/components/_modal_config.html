@@ -35,7 +35,7 @@
                                     <select class="form-control form-control-sm cfg-input" id="cfg-remote_type">
                                         <option value="">-- No Change --</option>
                                         <option value="local">Local Drive</option>
-                                        <option value="sftp">SFTP (Linux Server)</option>
+                                        <option value="sftp">SSH - SFTP</option>
                                         <option value="ftp">FTP</option>
                                     </select>
                                 </div>
@@ -46,7 +46,12 @@
                             </div>
                             
                             <div class="bg-light p-3 rounded border">
-                                <h6 class="small text-muted font-weight-bold mb-3 border-bottom pb-1">Network Credentials (SFTP / FTP)</h6>
+                                <div class="d-flex justify-content-between align-items-center mb-3 border-bottom pb-1">
+                                    <h6 class="small text-muted font-weight-bold mb-0">Network Credentials (SFTP / FTP)</h6>
+                                    <button type="button" class="btn btn-sm btn-outline-info font-weight-bold" onclick="runConfigTest()" id="btn-test-cfg">
+                                        <i class="fas fa-network-wired"></i> Test Connection
+                                    </button>
+                                </div>
                                 <div class="row">
                                     <div class="col-md-8 form-group mb-2">
                                         <label class="small font-weight-bold mb-1">Host / IP</label>
@@ -196,6 +201,81 @@
         } finally {
             btn.disabled = false;
             btn.innerHTML = '<i class="fas fa-paper-plane"></i> Dispatch to Fleet';
+        }
+    }
+
+    async function runConfigTest() {
+        const btn = document.getElementById('btn-test-cfg');
+        const targetMacsStr = document.getElementById('cfg-target-macs').value;
+        
+        if (!targetMacsStr) {
+            showToast("No modules selected to test.", "info");
+            return;
+        }
+        
+        const targetMacs = JSON.parse(targetMacsStr);
+
+        const connectionData = {
+            remote_type: document.getElementById('cfg-remote_type').value,
+            host: document.getElementById('cfg-host').value.trim(),
+            port: parseInt(document.getElementById('cfg-port').value) || null,
+            user: document.getElementById('cfg-user').value.trim(),
+            password: document.getElementById('cfg-password').value
+        };
+
+        if (!connectionData.remote_type || connectionData.remote_type === 'local') {
+            showToast("Testing is only available for SFTP/FTP connections. Ensure 'Protocol Type' is selected.", "info");
+            return;
+        }
+        if (!connectionData.host || !connectionData.user) {
+            showToast("Host and Username are required to run a test.", "info");
+            return;
+        }
+
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing...';
+
+        // Calls the global testSyncConnection function defined in _table_fleet.html
+        if (typeof testSyncConnection === 'function') {
+            await testSyncConnection(targetMacs, connectionData);
+        } else {
+            showToast("Error: testSyncConnection function not found.", "info");
+        }
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-network-wired"></i> Test Connection';
+    }
+
+    async function testSyncConnection(macsArray, connectionData) {
+        try {
+            const response = await fetch(`/api/fleet/bulk/sync/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    target_macs: macsArray,
+                    ...connectionData
+                })
+            });
+            
+            const result = await response.json();
+            let successCount = 0;
+            let errors = [];
+            
+            result.results.forEach(res => {
+                if (res.status === 'success') successCount++;
+                else errors.push(`[${res.mac}] ${res.data?.error || res.message}`);
+            });
+            
+            if (errors.length > 0) {
+                showToast(`Test Failed on ${errors.length} nodes:\n\n${errors.join('\n')}`, "info");
+                return false;
+            } else {
+                showToast(`Connection successful on all ${successCount} nodes! You can now save.`, "info");
+                return true;
+            }
+        } catch(e) {
+            showToast("Network failure trying to run test.", "info");
+            return false;
         }
     }
 </script>
