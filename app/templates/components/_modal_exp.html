@@ -5,7 +5,7 @@
     <div class="modal-content shadow">
       
       <div class="modal-header bg-primary text-white border-0 py-3">
-        <h5 class="modal-title"><i class="fas fa-flask"></i> Configure Global Experiment</h5>
+        <h5 class="modal-title"><i class="fas fa-flask"></i> Configure Batch Experiment</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       
@@ -194,8 +194,8 @@
         
         if (diffMins > 0 && interval >= 5) {
             let picsPerCam = Math.floor(diffMins / interval) + 1;
-            let totalBase = picsPerCam * selectedMacs.size;
-            document.getElementById('est-pics').innerText = `~ ${totalBase.toLocaleString()} img/cam`;
+            let totalBase = picsPerCam;
+            document.getElementById('est-pics').innerText = `~ ${totalBase.toLocaleString()} images per camera`;
         } else {
             document.getElementById('est-pics').innerText = '0';
         }

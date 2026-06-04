@@ -22,7 +22,8 @@ def digest_node_state(mac: str, raw: dict, db_mod: Optional[RobotModule], master
     if not is_online:
         return {
             "mac": mac, "hostname": display_name, "raw_hostname": hostname, "ip": ip, "is_online": False,
-            "uptime": "OFF", 
+            "description": db_mod.description if db_mod else None,
+            "uptime": "OFF",
             "primary_state": "OFFLINE", "needs_attention": True,
             "issues": ["Node Offline"], "hardware_desc": hardware_desc, # Preserved!
             "last_seen": db_mod.last_seen.strftime("%Y-%m-%d %H:%M:%S") if db_mod and db_mod.last_seen else "Unknown",
@@ -125,6 +126,7 @@ def digest_node_state(mac: str, raw: dict, db_mod: Optional[RobotModule], master
 
     return {
         "mac": mac, "hostname": display_name, "raw_hostname": hostname, "ip": ip, "is_online": True,
+        "description": db_mod.description if db_mod else None,
         "primary_state": primary_state, "needs_attention": has_warnings, "is_diagnosing": is_diagnosing,
         "issues": issues, "storage_pct": storage_pct, "ir_status": ir_status,
         "cams_ok": sum(1 for cam in raw.get("cam_reports", {}).values() if cam.get("health") == "OK"),

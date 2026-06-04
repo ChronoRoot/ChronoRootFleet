@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    /* Force the body to not scroll, letting the iframe handle scrolling */
+    html, body { 
+        height: 100%; 
+        overflow: hidden; 
+    }
+    
+    /* TRICK: Target ONLY the main content container (the one immediately after the nav).
+       This safely removes the edge margins without breaking the navbar's layout! */
+    nav + .container-fluid {
+        padding: 0 !important;
+    }
+
+    /* Flexbox layout to perfectly fill the screen below the navbar */
+    .remote-wrapper {
+        margin-top: -1.5rem; /* Pulls the wrapper UP to eat the navbar's mb-4 gap */
+        height: calc(100vh - 56px); /* 56px is the exact height of the navbar */
+        display: flex;
+        flex-direction: column;
+        background-color: #f8f9fc;
+    }
+
+    .remote-header {
+        background-color: #fff;
+        padding: 12px 24px;
+        border-bottom: 1px solid #eaecf4;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        z-index: 10;
+    }
+
+    .remote-iframe-container {
+        flex-grow: 1;
+        width: 100%;
+        position: relative;
+    }
+
+    .loading-overlay {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        background-color: #f8f9fc;
+        z-index: 1;
+    }
+</style>
+
+<div class="remote-wrapper">
+    {% if is_offline %}
+    <div class="container mt-5">
+        <div class="alert alert-danger shadow-sm border-left-strong">
+            <h4 class="alert-heading"><i class="fas fa-unlink"></i> Connection Lost</h4>
+            <p>The module with MAC address <strong>{{ mac }}</strong> is currently offline or unreachable.</p>
+            <hr>
+            <a href="/" class="btn btn-dark font-weight-bold"><i class="fas fa-arrow-left"></i> Return to Fleet Hub</a>
+        </div>
+    </div>
+    {% else %}
+    
+    <div class="remote-header">
+        <h5 class="m-0 text-dark" style="letter-spacing: 0.5px;">
+            <i class="fas fa-desktop text-primary mr-2"></i> Controller for <strong class="text-primary">{{ hostname }}</strong>
+        </h5>
+        <div class="d-flex gap-2">
+            <button onclick="document.getElementById('edge-frame').contentWindow.location.reload();" class="btn btn-sm btn-outline-info font-weight-bold shadow-sm">
+                <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+            <a href="/" class="btn btn-sm btn-outline-secondary font-weight-bold shadow-sm">
+                <i class="fas fa-arrow-left"></i> Go Back
+            </a>
+        </div>
+    </div>
+
+    <div class="remote-iframe-container">
+        <div class="loading-overlay" id="loading-overlay">
+            <i class="fas fa-circle-notch fa-spin fa-3x text-muted mb-3"></i>
+            <h5 class="text-muted">Tunneling to edge node...</h5>
+        </div>
+        
+        <iframe 
+            id="edge-frame"
+            src="/proxy/{{ mac }}/{{ dest }}" 
+            style="width: 100%; height: 100%; border: none; position: relative; z-index: 2;"
+            onload="document.getElementById('loading-overlay').style.display = 'none';">
+        </iframe>
+    </div>
+    
+    {% endif %}
+</div>
+{% endblock %}

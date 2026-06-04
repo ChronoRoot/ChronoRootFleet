@@ -10,8 +10,9 @@ class RobotModule(SQLModel, table=True):
     ip_address: str
     last_seen: datetime
     
-    # --- NEW: Quality of Life & Time Tracking ---
+    # --- Quality of Life & Time Tracking ---
     alias: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None) 
     use_ntp: bool = Field(default=True)
     ntp_server: str = Field(default="pool.ntp.org")
     
@@ -19,17 +20,21 @@ class RobotModule(SQLModel, table=True):
     camera_type: str = Field(default="UNKNOWN")
     experiment_runs: List["ExperimentRun"] = Relationship(back_populates="module")
 
-class FleetCohort(SQLModel, table=True):
+class ExperimentalBatch(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     launched_at: datetime = Field(default_factory=datetime.utcnow)
     interval_minutes: int
     ir_enabled: bool
-    experiment_runs: List["ExperimentRun"] = Relationship(back_populates="cohort")
+    
+    experiment_runs: List["ExperimentRun"] = Relationship(
+        back_populates="batch",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
 
 class ExperimentRun(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    cohort_id: int = Field(foreign_key="fleetcohort.id")
+    batch_id: int = Field(foreign_key="experimentalbatch.id")
     module_mac: str = Field(foreign_key="robotmodule.mac_address")
     local_exp_id: str
     status: str = Field(default="RUNNING")
@@ -44,7 +49,7 @@ class ExperimentRun(SQLModel, table=True):
     end_time: str = Field(default="")
     message: str = Field(default="")
     
-    cohort: Optional[FleetCohort] = Relationship(back_populates="experiment_runs")
+    batch: Optional[ExperimentalBatch] = Relationship(back_populates="experiment_runs")
     module: Optional[RobotModule] = Relationship(back_populates="experiment_runs")
 
 # --- ENGINE ---

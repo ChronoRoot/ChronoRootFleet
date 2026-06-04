@@ -15,6 +15,23 @@
     </table>
 </div>
 
+<div class="modal fade" id="proxyModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-xl" style="height: 90vh;">
+    <div class="modal-content shadow" style="height: 100%;">
+      <div class="modal-header bg-dark text-white border-0 py-2">
+        <h5 class="modal-title"><i class="fas fa-desktop"></i> Remote View: <span id="proxy-hostname" class="text-info"></span></h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="closeProxy()"></button>
+      </div>
+      <div class="modal-body p-0 bg-light" style="height: 100%;">
+        <div id="proxy-spinner" class="text-center py-5 text-muted">
+            <i class="fas fa-spinner fa-spin fa-2x mb-3"></i><br>Tunneling to Edge Node...
+        </div>
+        <iframe id="proxy-frame" style="width: 100%; height: 100%; border: none; display: none;" onload="hideProxySpinner()"></iframe>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="historyModal" tabindex="-1">
   <div class="modal-dialog modal-lg">
     <div class="modal-content shadow">
@@ -27,11 +44,40 @@
         <div class="bg-white border rounded shadow-sm mb-4">
             <table class="table table-sm table-hover mb-0">
                 <thead class="bg-light text-muted small">
-                    <tr><th>Date</th><th>Cohort Name</th><th>Status</th><th>Yield</th><th>Link</th></tr>
+                    <tr><th>Date</th><th>Experimental Batch Name</th><th>Status</th><th>Yield</th><th>Link</th></tr>
                 </thead>
                 <tbody id="hist-runs-body"></tbody>
             </table>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="identityModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content shadow border-0">
+      <div class="modal-header bg-light border-bottom py-3">
+        <h5 class="modal-title text-dark"><i class="fas fa-id-badge text-primary"></i> Edit Module Identity</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body bg-white">
+        <input type="hidden" id="ident-mac">
+        <div class="mb-3">
+            <label class="form-label small font-weight-bold text-muted text-uppercase mb-1">ID Name (Alias)</label>
+            <input type="text" class="form-control" id="ident-name" placeholder="e.g. Chamber 1 Alpha">
+        </div>
+        <div class="mb-2">
+            <label class="form-label small font-weight-bold text-muted text-uppercase mb-1">Description</label>
+            <textarea class="form-control" id="ident-desc" rows="2" placeholder="e.g. Top shelf, left rack."></textarea>
+            <small class="text-muted font-italic">Helps identify the physical hardware in the lab.</small>
+        </div>
+      </div>
+      <div class="modal-footer bg-light border-top py-2">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary font-weight-bold px-4" onclick="saveIdentity()">
+            <i class="fas fa-save"></i> Save Identity
+        </button>
       </div>
     </div>
   </div>
@@ -114,27 +160,25 @@
                     <tr class="row-hover" style="opacity: 0.6; background-color: #f8f9fa;">
                         <td class="text-center">${checkboxHtml}</td>
                         <td>
-                            <div class="font-weight-bold text-secondary text-truncate" style="font-size: 1.05rem; cursor:pointer;" onclick="editAlias('${node.mac}', '${node.hostname}')" title="Click to edit name">
-                                <i class="fas fa-edit small text-muted"></i> ${node.hostname}
-                            </div>
-                            <div class="text-muted hw-detail">${node.ip}</div>
-                        </td>
-                        <td>
-                            <div class="text-danger font-weight-bold mb-1"><i class="fas fa-unlink"></i> Module Offline</div>
-                            <div class="text-muted small"><i class="far fa-clock"></i> Last Seen: <br>${node.last_seen}</div>
-                        </td>
-                        <td>
-                            <div class="text-muted small"><i class="fas fa-microchip"></i> Configured as: ${node.hardware_desc}</div>
-                            <div class="text-muted small"><i class="fas fa-globe"></i> Time Mode: ${node.time_mode || 'Unknown'}</div>
-                        </td>
-                        <td>
-                            <div class="d-flex flex-column gap-2">
-                                <button class="btn btn-sm btn-outline-secondary w-100 disabled"><i class="fas fa-ban"></i> Offline</button>
-                                <button onclick="showHistory('${node.mac}', '${node.hostname}', '${node.ip}')" class="btn btn-sm btn-light border shadow-sm text-secondary w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> Experiment History
-                                </button>
-                            </div>
-                        </td>
+                        <div class="font-weight-bold text-dark text-truncate mb-1" style="font-size: 1.05rem; cursor: pointer;" 
+                            onclick="openIdentityModal('${node.mac}', '${node.hostname}', '${node.description || ''}')" title="Click to edit identity">
+                            <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                        </div>
+                        
+                        <div class="text-muted small text-truncate mb-2" style="font-size: 0.82rem;" title="${node.description || 'No description'}">
+                            ${node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">No location set...</span>'}
+                        </div>
+                        
+                        <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="MAC Address">
+                            <i class="fas fa-desktop"></i> Hostname: ${node.hostname}
+                        </div>
+                        <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="MAC Address">
+                            <i class="fas fa-microchip"></i> MAC: ${node.mac}
+                        </div>
+                        <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="IP Address">
+                            <i class="fas fa-network-wired"></i> IP: ${node.ip}
+                        </div>
+                        
                     </tr>`;
                     return; // Skip the rest of the loop for this node
                 }
@@ -253,10 +297,25 @@
                             ${checkboxHtml}
                         </td>
                         <td>
-                            <div class="font-weight-bold text-dark text-truncate" style="font-size: 1.05rem; cursor: pointer;" onclick="editAlias('${node.mac}', '${node.hostname}')" title="Click to rename module">
+                            <div class="font-weight-bold text-dark text-truncate mb-1" style="font-size: 1.05rem; cursor: pointer;" 
+                                onclick="openIdentityModal('${node.mac}', '${node.hostname}', '${node.description || ''}')" title="Click to edit identity">
                                 <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
                             </div>
-                            <div class="text-muted hw-detail">${node.ip}</div>
+                            
+                            <div class="text-muted small text-truncate mb-2" style="font-size: 0.82rem;" title="${node.description || 'No description'}">
+                                ${node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">Enter description...</span>'}
+                            </div>
+                            <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="MAC Address">
+                                <i class="fas fa-desktop"></i> Hostname: ${node.hostname}
+                            </div>
+
+                            <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="MAC Address">
+                                <i class="fas fa-microchip"></i> MAC: ${node.mac} 
+                            </div>
+                            <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="IP Address">
+                                <i class="fas fa-network-wired"></i> IP: ${node.ip}
+                            </div>
+                            
                             ${alertHtml}
                         </td>
                         <td>${jobHtml}</td>
@@ -307,9 +366,9 @@
                         </td>
                         <td>
                             <div class="d-flex flex-column gap-2">
-                                <a href="http://${node.ip}/" target="_blank" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-home"></i></div> Main Page
-                                </a>
+                                <button onclick="window.location.href = '/remote/${node.mac}'" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start">
+                                    <div style="width: 24px; text-align: center;"><i class="fas fa-desktop"></i></div> Remote View
+                                </button>
                                 
                                 <button onclick="runSingleDiagnostic('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-light border shadow-sm text-warning w-100 justify-content-start">
                                     <div style="width: 24px; text-align: center;"><i class="fas fa-stethoscope"></i></div> Diagnostic
@@ -374,20 +433,32 @@
         }
     }
 
-    async function editAlias(mac, currentName) {
-        let newName = await asyncPrompt("Rename Module", `Enter a new custom name for module [${mac}]:`, currentName);
+    function openIdentityModal(mac, currentName, currentDesc) {
+        document.getElementById('ident-mac').value = mac;
+        document.getElementById('ident-name').value = currentName === "Unknown Node" ? "" : currentName;
+        document.getElementById('ident-desc').value = currentDesc;
         
-        if (newName !== null) {
-            try {
-                await fetch(`/api/fleet/db/modules/${mac}/alias`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ alias: newName })
-                });
-                fetchFleetData(); 
-            } catch (e) {
-                showToast("Failed to update module name.", 'danger');
-            }
+        new bootstrap.Modal(document.getElementById('identityModal')).show();
+    }
+
+    async function saveIdentity() {
+        const mac = document.getElementById('ident-mac').value;
+        const newName = document.getElementById('ident-name').value;
+        const newDesc = document.getElementById('ident-desc').value;
+        
+        try {
+            const res = await fetch(`/api/fleet/db/modules/${mac}/identity`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ alias: newName, description: newDesc })
+            });
+            
+            if (!res.ok) throw new Error("Failed to save.");
+            
+            bootstrap.Modal.getInstance(document.getElementById('identityModal')).hide();
+            fetchFleetData(); 
+        } catch (e) {
+            showToast("Failed to update module identity.", 'danger');
         }
     }
 
@@ -495,8 +566,10 @@
             let rHtml = '';
             data.runs.forEach(r => {
                 let n_col = r.status === 'ERROR' ? 'text-danger' : (r.status === 'FINISHED' ? 'text-success' : 'text-primary');
-                let link = ip && r.local_exp_id ? `<a href="http://${ip}/exp/${r.local_exp_id}" target="_blank">View</a>` : '-';
-                
+                let link = r.local_exp_id 
+                    ? `<button onclick="window.location.href = '/remote/${mac}?dest=exp/${r.local_exp_id}'" class="btn btn-xs btn-outline-info py-0 px-2" style="font-size: 0.75rem;"><i class="fas fa-desktop"></i> View in Proxy</button>` 
+                    : `<span class="text-muted small">-</span>`;
+                    
                 let timeLine = r.start ? `${r.start.substring(5,16)}<br>${r.end.substring(5,16)}` : 'Unknown';
                 let msgHtml = r.message ? `<br><small class="text-danger font-italic">${r.message}</small>` : '';
 

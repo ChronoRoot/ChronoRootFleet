@@ -1,132 +1,122 @@
-# ChronoRoot Fleet Controller - Master Node
+# ChronoRoot Fleet Controller
 
-## Overview
+The Master Controller for the ChronoRoot automated plant phenotyping network. This application provides a centralized, asynchronous orchestration layer to monitor hardware health, manage network configurations, and deploy synchronized biological imaging batches across a distributed fleet of Raspberry Pi edge nodes.
 
-The ChronoRoot Fleet Controller is a centralized operations hub designed to orchestrate, monitor, and maintain dozens of individual ChronoRoot imaging modules across a local network using a **Passive Aggregation** architecture.
+## 🚀 Core Features
 
-The system relies on a "Pull" discovery architecture where the Master autonomously discovers modules, monitors their health via RAM-disk state, and records scientific metadata to a persistent SQLite database.
+* **Passive Aggregation Architecture:** The Master relies on a non-blocking "Pull" architecture. Edge nodes operate entirely autonomously; the Master merely observes, orchestrates, and logs their progress.
+* **Zero-Touch Discovery:** Background sweepers continuously scan the subnet (`10.42.0.x`) to automatically discover, register, and configure newly connected modules without manual IP entry.
+* **Zero-Touch Reverse Proxy:** Seamlessly access the native web interface of any individual edge node directly through the Master dashboard. 
+* **Global Batch Orchestration:** Launch synchronized time-lapse experiments. The system runs strict pre-flight checks to prevent jobs from starting on nodes with insufficient storage, overlapping schedules, or hardware faults.
+* **Autonomous Time Synchronization:** Detects clock drift on offline/non-NTP edge nodes and pushes the master time to ensure perfect chronological alignment of phenotyping data.
+* **Bulk Fleet Management:** Push SFTP/FTP/Rclone configurations, trigger background network transfers, or send mass-reboot commands to selected module batches.
 
-## Project Structure
+## 🛠️ Technology Stack
+
+| Component | Technology | Description |
+| :--- | :--- | :--- |
+| **Backend Framework** | FastAPI (Python 3.10+) | High-performance async web framework capable of sweeping 250+ IPs in seconds. |
+| **Database Tracking** | SQLModel / SQLite | Highly relational tracking of Batches, Hardware Nodes, and Module Runs. |
+| **Network Client** | HTTPX | Asynchronous HTTP client for non-blocking edge device communication. |
+| **Frontend UI** | Jinja2 + Bootstrap 5 | Server-Side Rendered templates with vanilla JS polling for accessible maintenance. |
+
+## ⚙️ Installation & Setup
+
+The Fleet Controller can be deployed in two ways: via Docker (recommended for PCs/Servers) or directly on raspberry pi modules (recommended if using a Raspberry Pi as the Master Router).
+
+### Option 1: Docker Deployment on a dedicated computer
+
+1. Clone the repository to your Master Node:
+```bash
+git clone [https://github.com/your-org/ChronoRoot-FleetControl.git](https://github.com/your-org/ChronoRoot-FleetControl.git)
+cd ChronoRoot-FleetControl
+
+```
+
+2. Start the Fleet Master via Docker Compose:
+
+```bash
+docker-compose up -d --build
+
+```
+
+3. Open your browser and navigate to `http://localhost:8000` (or the IP address of your Master Node).
+
+### Option 2: Raspberry Pi Deployment
+
+Running without Docker is ideal if your Raspberry Pi is acting as the central DHCP router (e.g., via RaspAP) for the fleet network.
+
+1. Ensure your system is up to date and has Python 3 installed:
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install python3-pip python3-venv sqlite3 -y
+
+```
+
+2. Clone the repository and navigate into it:
+
+```bash
+git clone [https://github.com/your-org/ChronoRoot-FleetControl.git](https://github.com/your-org/ChronoRoot-FleetControl.git)
+cd ChronoRoot-FleetControl
+
+```
+
+3. Create and activate a Python Virtual Environment:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+
+```
+
+4. Install the required dependencies:
+
+```bash
+pip install -r requirements.txt
+
+```
+
+5. Launch the application using Uvicorn:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+```
+
+*(Note: To run this continuously in the background, it is highly recommended to set up a `systemd` service file pointing to your virtual environment's uvicorn executable).*
+
+## 📁 Project Structure
 
 ```text
-chronoroot-master/
-├── docker-compose.yml       # Infrastructure, virtual network, and mock nodes
-├── Dockerfile               # Python 3.10 container blueprint
-├── requirements.txt         # FastAPI, SQLModel, Jinja2, httpx
-├── README.md                # This file
-└── app/
-    ├── __init__.py          
-    ├── database.py          # SQLModel Schemas (Hardware, Cohorts)
-    ├── master_app.py        # Core FastAPI Engine & Smart Sweep Loop
-    ├── mock_module.py       # Time-bending ghost container simulator
-    ├── data/                # Persistent SQLite database storage
-    └── templates/           # Jinja2 SSR UI 
-        ├── base.html        # Global layout & navigation
-        ├── index.html       # Triage & Fleet Operations View
-        ├── experiments.html # Global Biological Run tracking
+FleetControl/
+├── app/
+│   ├── core/                 # Shared in-memory state and background monitoring loops
+│   ├── data/                 # Directory for the persistent SQLite DB
+│   ├── routers/              # API endpoints for fleet orchestration and single-node control
+│   ├── templates/            # HTML/JS Frontend UI dashboards
+│   ├── database.py           # SQLModel schema definitions (ExperimentBatch, ModuleRun)
+│   └── main.py               # FastAPI application factory & lifespan events
+├── docker-compose.yml
+├── Dockerfile
+└── requirements.txt
 
 ```
 
-## Infrastructure Configuration
+## 🖥️ Usage Guide
 
-### 1. The `Dockerfile`
+### 1. Fleet Operations (Triage)
 
-The environment uses a lightweight Python 3.10 image.
+Navigate to the home page to view the All Modules table. The system evaluates the health of the entire network. Modules with storage warnings, disconnected cameras, or system faults are automatically flagged. Use the Bulk Action bar to send mass network sync commands or reboots.
 
-```dockerfile
-FROM python:3.10-slim
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+### 2. Launching a Biological Batch
 
-```
+Select your target modules from the All Modules table and click **Launch Global Batch**. Define your parameters (Timeline, Interval, Lighting). The Master will automatically run a Pre-Flight validation check against all selected nodes before dispatching the payload.
 
-### 2. The `docker-compose.yml`
+### 3. Reviewing Historical Data
 
-This configuration spins up the Master Controller and four distinct "Ghost" modules (Workhorse, Veteran, Rookie, Broken) on an isolated `192.168.8.x` subnet.
+Navigate to the **Experiment Status** tab. This view tracks the global progress of active batches. If a module dropped offline during a run, click **Sync Archive History** to force the Master to connect to the node and pull the true, final picture counts directly from the edge node's local disk.
 
-```yaml
-version: '3.8'
-networks:
-  chrono_lab_net:
-    ipam:
-      config: [{ subnet: 192.168.8.0/24 }]
+### 4. Remote Module Access
 
-services:
-  fleet-master:
-    build: .
-    container_name: chronoroot-fleet-master
-    ports: ["8000:8000"]
-    volumes: [".:/app", "fleet_db_volume:/data"]
-    networks: [chrono_lab_net]
-    command: uvicorn app.master_app:app --host 0.0.0.0 --port 8000 --reload
-
-  mock-alpha:
-    build: .
-    container_name: mock-alpha
-    volumes: [".:/app"]
-    networks:
-      chrono_lab_net: { ipv4_address: 192.168.8.15 }
-    environment:
-      - MODULE_HOSTNAME=chamber-alpha
-      - MODULE_PROFILE=active
-    command: uvicorn app.mock_module:app --host 0.0.0.0 --port 80 --reload
-    
-  # (Additional mock nodes follow same pattern with different IPs and PROFILES)
-
-volumes:
-  fleet_db_volume:
-    name: chronoroot_fleet_data
-
-```
-
-## Setup & Launch
-
-### Prerequisites
-
-1. **Docker & Docker Compose V2:** Ensure you use `docker compose` (with a space).
-2. **Permissions:**
-
-```bash
-sudo usermod -aG docker $USER
-newgrp docker
-
-```
-
-### Launching
-
-From the root directory, build and start:
-
-```bash
-docker compose up -d --build
-
-```
-
-## Operations Guide
-
-### 1. Fleet Hub (Triage)
-
-Navigate to `http://localhost:8000`. The **Fleet Operations** view uses a high-density table to monitor health.
-
-* **Triage:** Modules with errors float to the top automatically.
-* **Global Experiments:** Select modules via checkboxes and click "Launch Global Exp" to initiate a synchronized cohort launch.
-
-### 2. Global Experiments View
-
-Navigate to `http://localhost:8000/experiments`.
-
-* View aggregated progress across all modules in a cohort.
-* Click any row to expand and view the progress of **individual hardware nodes** participating in that run.
-
-### 3. Resilience Reporting
-
-Navigate to `http://localhost:8000/reports`.
-
-* Tracks the **Blast Radius**: Distinguishes between single-node hardware failures and facility-wide power losses.
-* Calculates exact frame loss/downtime for post-mortem analysis.
-
-## Maintenance
-
-* **Diagnostics:** Use the "Run Diagnostics" button in the Fleet Hub to trigger a global hardware scan.
+Need to physically calibrate a camera's focus wheel or check local system logs? Click **Remote View** on any active node in the Fleet Operations table. The Master Controller will securely tunnel into the node, allowing you to interact with its native interface without ever leaving the Fleet Commander.

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 from sqlmodel import Session, select
 
-from app.database import RobotModule, engine, FleetCohort, ExperimentRun
+from app.database import RobotModule, engine, ExperimentalBatch, ExperimentRun
 from app.core.state import LIVE_FLEET_STATE
 from app.core.transformers import digest_node_state 
 
@@ -271,20 +271,20 @@ async def launch_global_experiment(req: ExperimentLaunchRequest):
         raise HTTPException(status_code=400, detail="No valid nodes remained to launch against.")
 
     # ==========================================
-    # PHASE 2: DATABASE COHORT CREATION
+    # PHASE 2: DATABASE BATCH CREATION
     # ==========================================
-    # We create the cohort *before* broadcasting so we have a valid ID to attach runs to.
+    # We create the batch *before* broadcasting so we have a valid ID to attach runs to.
     try:
         with Session(engine) as session:
-            new_cohort = FleetCohort(
+            new_batch = ExperimentalBatch(
                 name=req.name, 
                 interval_minutes=req.interval, 
                 ir_enabled=req.ir_enabled,
                 launched_at=datetime.utcnow()
             )
-            session.add(new_cohort)
+            session.add(new_batch)
             session.commit()
-            session.refresh(new_cohort)
+            session.refresh(new_batch)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Master DB Failure: {e}")
 
@@ -310,7 +310,7 @@ async def launch_global_experiment(req: ExperimentLaunchRequest):
                 res = await client.post(f"http://{node_info['ip']}/api/", json=payload, timeout=5.0)
                 if res.status_code == 201:
                     local_exp_id = res.json().get("expid")
-                    return {"status": "success", "mac": node_info["mac"], "local_id": local_exp_id, "expected": expected_per_cam * len(node_info["target_cameras"])}
+                    return {"status": "success", "mac": node_info["mac"], "local_id": local_exp_id, "expected": expected_per_cam}
                 else:
                     return {"status": "error", "hostname": node_info["hostname"], "msg": f"Rejected: {res.text}"}
             except Exception as e:
@@ -330,7 +330,7 @@ async def launch_global_experiment(req: ExperimentLaunchRequest):
         with Session(engine) as session:
             for s in successes:
                 run = ExperimentRun(
-                    cohort_id=new_cohort.id,
+                    batch_id=new_batch.id,
                     module_mac=s["mac"],
                     local_exp_id=s["local_id"],
                     status="SCHEDULED",
@@ -357,61 +357,10 @@ async def launch_global_experiment(req: ExperimentLaunchRequest):
     
     return {
         "status": "success", 
-        "message": f"Global Experiment '{req.name}' safely launched on {len(successes)} modules."
+        "message": f"Batch Experiment '{req.name}' safely launched on {len(successes)} modules."
     }
     
 # --- DATABASE & HISTORY VIEWS ---
-
-@router.get("/db/experiments")
-async def get_db_experiments():
-    """Powers the 'Experiment Status' View (Cohorts)."""
-    with Session(engine) as session:
-        cohorts = session.exec(select(FleetCohort).order_by(FleetCohort.id.desc())).all()
-        result = []
-        for c in cohorts:
-            runs = session.exec(select(ExperimentRun).where(ExperimentRun.cohort_id == c.id)).all()
-            if not runs: continue 
-            
-            total_expected = sum([r.expected_total or 0 for r in runs])
-            total_taken = sum([r.taken_so_far or 0 for r in runs])
-            missed = sum([r.missed_frames or 0 for r in runs])
-            
-            statuses = [r.status for r in runs]
-            if "RUNNING" in statuses: global_status = "RUNNING"
-            elif "ERROR" in statuses: global_status = "ERROR"
-            else: global_status = "FINISHED"
-
-            nodes_data = []
-            for r in runs:
-                mod = session.get(RobotModule, r.module_mac)
-                display_name = mod.alias if (mod and mod.alias) else (mod.hostname if mod else "Unknown Node")
-                
-                nodes_data.append({
-                    "mac": r.module_mac, 
-                    "hostname": display_name,
-                    "ip": mod.ip_address if mod else None,
-                    "local_exp_id": r.local_exp_id,
-                    "status": r.status, 
-                    "taken": r.taken_so_far or 0, 
-                    "expected": r.expected_total or 0, 
-                    "missed": r.missed_frames or 0,
-                    "start_time": r.start_time, 
-                    "end_time": r.end_time,     
-                    "message": r.message        
-                })
-
-            if isinstance(c.launched_at, str):
-                launch_str = c.launched_at[:16]
-            else:
-                launch_str = c.launched_at.strftime("%Y-%m-%d %H:%M")
-
-            result.append({
-                "id": c.id, "name": c.name, "launched_at": launch_str,
-                "interval": c.interval_minutes or 0, "node_count": len(runs), "global_status": global_status,
-                "progress": {"taken": total_taken, "expected": total_expected, "missed": missed},
-                "nodes": nodes_data
-            })
-        return result
 
 @router.post("/db/sync_archives")
 async def sync_archives_to_db():
@@ -456,40 +405,40 @@ async def sync_archives_to_db():
                     updates_count += 1
                     continue
                 
-                # --- 2. CREATE NEW COHORTS (SPLIT BY TIME) ---
-                cohort_name = job_data.get("name") or f"Orphan - {local_exp_id}"
+                # --- 2. CREATE NEW BATCHES (SPLIT BY TIME) ---
+                batch_name = job_data.get("name") or f"Orphan - {local_exp_id}"
                 
                 try:
                     launched_dt = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
                 except Exception:
                     launched_dt = datetime.utcnow()
                     
-                # Find all existing cohorts with this exact name
-                cohorts_with_name = session.exec(select(FleetCohort).where(FleetCohort.name == cohort_name)).all()
+                # Find all existing batchs with this exact name
+                batchs_with_name = session.exec(select(ExperimentalBatch).where(ExperimentalBatch.name == batch_name)).all()
                 
-                matching_cohort = None
-                for c in cohorts_with_name:
+                matching_batch = None
+                for c in batchs_with_name:
                     # If launched within 2 minutes of each other, it's the same global run!
                     delta = abs((c.launched_at - launched_dt).total_seconds())
                     if delta < 120:
-                        matching_cohort = c
+                        matching_batch = c
                         break
                         
-                # If no matching timeframe was found, spawn a brand new separate cohort
-                if not matching_cohort:
-                    matching_cohort = FleetCohort(
-                        name=cohort_name,
+                # If no matching timeframe was found, spawn a brand new separate batch
+                if not matching_batch:
+                    matching_batch = ExperimentalBatch(
+                        name=batch_name,
                         interval_minutes=int(job_data.get("interval") or 15),
                         ir_enabled=False,
                         launched_at=launched_dt
                     )
-                    session.add(matching_cohort)
+                    session.add(matching_batch)
                     session.commit()
-                    session.refresh(matching_cohort)
+                    session.refresh(matching_batch)
                     
                 # --- 3. CREATE THE RUN ---
                 new_run = ExperimentRun(
-                    cohort_id=matching_cohort.id,
+                    batch_id=matching_batch.id,
                     module_mac=mac,
                     local_exp_id=local_exp_id,
                     status=status_str,
@@ -511,10 +460,10 @@ async def sync_archives_to_db():
 @router.get("/db/experiments")
 async def get_db_experiments():
     with Session(engine) as session:
-        cohorts = session.exec(select(FleetCohort).order_by(FleetCohort.id.desc())).all()
+        batchs = session.exec(select(ExperimentalBatch).order_by(ExperimentalBatch.id.desc())).all()
         result = []
-        for c in cohorts:
-            runs = session.exec(select(ExperimentRun).where(ExperimentRun.cohort_id == c.id)).all()
+        for c in batchs:
+            runs = session.exec(select(ExperimentRun).where(ExperimentRun.batch_id == c.id)).all()
             if not runs: continue 
             
             total_expected = sum([r.expected_total or 0 for r in runs])
@@ -565,9 +514,9 @@ async def get_module_history(mac: str):
         runs = session.exec(select(ExperimentRun).where(ExperimentRun.module_mac == mac)).all()
         history_runs = []
         for r in runs:
-            c = session.get(FleetCohort, r.cohort_id)
+            c = session.get(ExperimentalBatch, r.batch_id)
             history_runs.append({
-                "name": c.name if c else "Unknown Cohort",
+                "name": c.name if c else "Unknown batch",
                 "status": r.status,
                 "taken": r.taken_so_far,
                 "expected": r.expected_total,
@@ -587,26 +536,49 @@ async def purge_all_history():
         runs = session.exec(select(ExperimentRun)).all()
         for r in runs: session.delete(r)
         
-        cohorts = session.exec(select(FleetCohort)).all()
-        for c in cohorts: session.delete(c)
+        batchs = session.exec(select(ExperimentalBatch)).all()
+        for c in batchs: session.delete(c)
         
         session.commit()
         return {"status": "success", "message": "Master Database history has been completely purged."}    
 
-class AliasUpdateRequest(BaseModel):
-    alias: str
+@router.delete("/db/experiments/{batch_id}")
+async def delete_batch(batch_id: int):
+    with Session(engine) as session:
+        # 1. Find the batch
+        batch = session.get(ExperimentalBatch, batch_id)
+        if not batch:
+            raise HTTPException(status_code=404, detail="Experimental batch not found.")
+        
+        # 2. Prevent Foreign Key Integrity Errors by deleting associated runs first
+        runs = session.exec(select(ExperimentRun).where(ExperimentRun.batch_id == batch_id)).all()
+        for r in runs:
+            session.delete(r)
+            
+        # 3. Delete the master batch
+        session.delete(batch)
+        session.commit()
+        
+        return {"status": "success", "message": f"batch {batch_id} successfully deleted."}
 
-@router.put("/db/modules/{mac}/alias")
-async def update_module_alias(mac: str, req: AliasUpdateRequest):
-    """Assigns a custom, human-readable name to a specific module."""
+class IdentityUpdateRequest(BaseModel):
+    alias: str
+    description: str
+
+@router.put("/db/modules/{mac}/identity")
+async def update_module_identity(mac: str, req: IdentityUpdateRequest):
+    """Assigns a custom name and physical location description to a specific module."""
     with Session(engine) as session:
         mod = session.get(RobotModule, mac)
         if not mod:
             raise HTTPException(status_code=404, detail="Module not found in DB.")
+            
         mod.alias = req.alias.strip() if req.alias.strip() else None
+        mod.description = req.description.strip() if req.description.strip() else None
+        
         session.add(mod)
         session.commit()
-        return {"status": "success", "alias": mod.alias}
+        return {"status": "success", "alias": mod.alias, "description": mod.description}
 
 @router.post("/bulk/time_sync_manual")
 async def sync_time_for_manual_nodes(req: BulkActionRequest):
