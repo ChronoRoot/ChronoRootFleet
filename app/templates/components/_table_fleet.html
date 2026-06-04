@@ -423,7 +423,9 @@
 
     // --- NODE ACTIONS ---
     async function runSingleDiagnostic(mac, hostname) {
-        if(!confirm(`Run a hardware diagnostic scan on ${hostname}?`)) return;
+        const confirmed = await asyncConfirm('Confirm Diagnostic', `Run a hardware diagnostic scan on ${hostname}?`);
+        if (!confirmed) return;
+        
         try {
             await fetch(`/api/node/${mac}/diagnostic`, { method: 'POST' });
             showToast(`Diagnostic scan started on ${hostname}. Background tests will take a few minutes.`, 'success');
@@ -468,7 +470,9 @@
             return; 
         }
         
-        if(!confirm(`Send ${action} command to ${selectedMacs.size} modules?`)) return;
+        const isDanger = action === 'REBOOT';
+        const confirmed = await asyncConfirm('Confirm Bulk Action', `Send ${action} command to ${selectedMacs.size} modules?`, isDanger);
+        if (!confirmed) return;
         
         let endpoint = '';
         if (action === 'DIAGNOSTIC') endpoint = '/api/fleet/bulk/diagnostic';
@@ -500,7 +504,9 @@
     }
 
     async function rebootSingleNode(mac, hostname) {
-        if(!confirm(`Are you absolutely sure you want to forcefully reboot ${hostname}?`)) return;
+        const confirmed = await asyncConfirm('Confirm Reboot', `Are you absolutely sure you want to forcefully reboot ${hostname}?`, true);
+        if (!confirmed) return;
+        
         try {
             await fetch(`/api/node/${mac}/reboot`, { method: 'POST' });
             showToast(`Reboot command sent to ${hostname}. It will drop offline momentarily.`, 'warning');
@@ -512,7 +518,8 @@
 
     // --- SYNC ACTIONS ---
     async function triggerSingleSync(mac, hostname) {
-        if(!confirm(`Trigger an immediate network transfer on ${hostname}?`)) return;
+        const confirmed = await asyncConfirm('Confirm Sync', `Trigger an immediate network transfer on ${hostname}?`);
+        if (!confirmed) return;
         
         try {
             const response = await fetch(`/api/fleet/bulk/sync/trigger`, {
@@ -536,7 +543,8 @@
     }
 
     async function cancelSingleSync(mac, hostname) {
-        if(!confirm(`Are you sure you want to kill the active network transfer on ${hostname}?`)) return;
+        const confirmed = await asyncConfirm('Confirm Abort', `Are you sure you want to kill the active network transfer on ${hostname}?`, true);
+        if (!confirmed) return;
         
         try {
             await fetch(`/api/fleet/bulk/sync/cancel`, {
