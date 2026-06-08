@@ -6,7 +6,7 @@ The Master Controller for the ChronoRoot automated plant phenotyping network. Th
 
 * **Passive Aggregation Architecture:** The Master relies on a non-blocking "Pull" architecture. Edge nodes operate entirely autonomously; the Master merely observes, orchestrates, and logs their progress.
 * **Zero-Touch Discovery:** Background sweepers continuously scan the subnet (`10.42.0.x`) to automatically discover, register, and configure newly connected modules without manual IP entry.
-* **Zero-Touch Reverse Proxy:** Seamlessly access the native web interface of any individual edge node directly through the Master dashboard. 
+* **Zero-Touch Reverse Proxy:** Seamlessly access the native web interface of any individual edge node directly through the Master dashboard. A custom FastAPI middleware intercepts and tunnels all traffic, ensuring strict network isolation without requiring any code changes on the edge modules.
 * **Global Batch Orchestration:** Launch synchronized time-lapse experiments. The system runs strict pre-flight checks to prevent jobs from starting on nodes with insufficient storage, overlapping schedules, or hardware faults.
 * **Autonomous Time Synchronization:** Detects clock drift on offline/non-NTP edge nodes and pushes the master time to ensure perfect chronological alignment of phenotyping data.
 * **Bulk Fleet Management:** Push SFTP/FTP/Rclone configurations, trigger background network transfers, or send mass-reboot commands to selected module batches.
@@ -22,9 +22,9 @@ The Master Controller for the ChronoRoot automated plant phenotyping network. Th
 
 ## ⚙️ Installation & Setup
 
-The Fleet Controller can be deployed in two ways: via Docker (recommended for PCs/Servers) or directly on raspberry pi modules (recommended if using a Raspberry Pi as the Master Router).
+The Fleet Controller can be deployed in two ways: via Docker (recommended for PCs/Servers) or directly on bare-metal hardware (recommended if using a Raspberry Pi as the Master Router).
 
-### Option 1: Docker Deployment on a dedicated computer
+### Option 1: Docker Deployment (PCs / Servers)
 
 1. Clone the repository to your Master Node:
 ```bash
@@ -42,49 +42,95 @@ docker-compose up -d --build
 
 3. Open your browser and navigate to `http://localhost:8000` (or the IP address of your Master Node).
 
+---
+
 ### Option 2: Raspberry Pi Deployment
 
-Running without Docker is ideal if your Raspberry Pi is acting as the central DHCP router (e.g., via RaspAP) for the fleet network.
+Running without Docker is highly recommended for low-resource devices like the Raspberry Pi. This method sets up the application as a background `systemd` service behind an `NGINX` reverse proxy.
 
-1. Ensure your system is up to date and has Python 3 installed:
+#### Automated Installation (Easiest)
 
-```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install python3-pip python3-venv sqlite3 -y
-
-```
-
-2. Clone the repository and navigate into it:
+We provide an automated setup script that handles all system dependencies, service creation, and NGINX routing.
 
 ```bash
 git clone [https://github.com/your-org/ChronoRoot-FleetControl.git](https://github.com/your-org/ChronoRoot-FleetControl.git)
 cd ChronoRoot-FleetControl
+chmod +x setup.sh
+./setup.sh
 
 ```
 
-3. Create and activate a Python Virtual Environment:
+#### Manual Installation (Copy & Paste)
+
+If you prefer to set up the system manually, copy and paste the following blocks into your terminal.
+
+**1. Install Dependencies & Setup Virtual Environment:**
 
 ```bash
+sudo apt update && sudo apt install -y nginx python3-pip python3-venv sqlite3 git
+git clone [https://github.com/ChronoRoot/ChronoRoot-FleetControl.git](https://github.com/ChronoRoot/ChronoRoot-FleetControl.git)
+cd ChronoRoot-FleetControl
 python3 -m venv venv
 source venv/bin/activate
-
-```
-
-4. Install the required dependencies:
-
-```bash
 pip install -r requirements.txt
 
 ```
 
-5. Launch the application using Uvicorn:
+**2. Create the Systemd Background Service:**
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+cat << EOF | sudo tee /etc/systemd/system/fleetcontrol.service
+[Unit]
+Description=ChronoRoot Fleet Controller (Uvicorn)
+After=network.target
+
+[Service]
+User=$USER
+Group=www-data
+WorkingDirectory=/srv/FleetControl
+Environment="PATH=/srv/FleetControl/venv/bin"
+
+ExecStart=/srv/FleetControl/venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable fleetcontrol --now
 
 ```
 
-*(Note: To run this continuously in the background, it is highly recommended to set up a `systemd` service file pointing to your virtual environment's uvicorn executable).*
+**3. Configure NGINX:**
+
+```bash
+cat << 'EOF' | sudo tee /etc/nginx/sites-available/fleetcontrol
+server {
+    listen 80;
+    server_name _;
+    client_max_body_size 50M;
+
+    location / {
+        proxy_pass [http://127.0.0.1:8000](http://127.0.0.1:8000);
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300;
+        proxy_connect_timeout 300;
+    }
+}
+EOF
+
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo ln -sf /etc/nginx/sites-available/fleetcontrol /etc/nginx/sites-enabled/
+sudo systemctl restart nginx
+
+```
 
 ## 📁 Project Structure
 
@@ -92,11 +138,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 FleetControl/
 ├── app/
 │   ├── core/                 # Shared in-memory state and background monitoring loops
+│   ├── doc/                  # System Architecture and About markdown files
 │   ├── data/                 # Directory for the persistent SQLite DB
 │   ├── routers/              # API endpoints for fleet orchestration and single-node control
 │   ├── templates/            # HTML/JS Frontend UI dashboards
 │   ├── database.py           # SQLModel schema definitions (ExperimentBatch, ModuleRun)
 │   └── main.py               # FastAPI application factory & lifespan events
+├── setup.sh                  # Automated bare-metal installer script
 ├── docker-compose.yml
 ├── Dockerfile
 └── requirements.txt

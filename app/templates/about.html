@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    /* Aggressively enforce dark text colors to prevent white-font washouts */
+    .markdown-body { 
+        color: #212529 !important; 
+        line-height: 1.7; 
+        font-size: 1.05rem; 
+    }
+    
+    .markdown-body p, 
+    .markdown-body li, 
+    .markdown-body table {
+        color: #212529 !important; 
+    }
+
+    .markdown-body h1, 
+    .markdown-body h2 { 
+        border-bottom: 1px solid #eaecf4; 
+        padding-bottom: 10px; 
+        margin-top: 30px; 
+        margin-bottom: 15px; 
+        font-weight: 700; 
+        color: #4e73df !important; 
+    }
+    
+    .markdown-body h3, 
+    .markdown-body h4, 
+    .markdown-body h5, 
+    .markdown-body h6 { 
+        margin-top: 25px; 
+        font-weight: 600;
+        color: #2c3e50 !important;
+    }
+
+    /* Enforce dark text inside code blocks */
+    .markdown-body pre { 
+        background-color: #f8f9fc !important; 
+        padding: 15px; 
+        border-radius: 5px; 
+        border: 1px solid #eaecf4; 
+        overflow-x: auto; 
+        margin-bottom: 20px; 
+    }
+    
+    .markdown-body code { 
+        font-family: Consolas, monospace; 
+        color: #d63384 !important; /* Bootstrap pink for inline code */
+        background-color: #f8f9fa; 
+        padding: 2px 4px; 
+        border-radius: 3px; 
+    }
+    
+    .markdown-body pre code { 
+        color: #212529 !important; /* Strict dark gray for code blocks */
+        background-color: transparent !important; 
+        padding: 0; 
+    }
+
+    .markdown-body hr { 
+        margin: 30px 0; 
+        border-color: #eaecf4; 
+    }
+    
+    /* Style Markdown Tables */
+    .markdown-body table { width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
+    .markdown-body table th, .markdown-body table td { padding: 0.75rem; vertical-align: top; border-top: 1px solid #eaecf4; }
+    .markdown-body table thead th { vertical-align: bottom; border-bottom: 2px solid #eaecf4; background-color: #f8f9fa; color: #212529 !important; }
+
+    /* Tab navigation styles */
+    .nav-tabs .nav-link { color: #495057 !important; font-weight: 600; background-color: #f8f9fc; border: 1px solid #eaecf4; margin-right: 5px; border-radius: 0.5rem 0.5rem 0 0; }
+    .nav-tabs .nav-link.active { color: #4e73df !important; background-color: #fff !important; border-bottom-color: transparent !important; }
+    .nav-tabs .nav-link:hover:not(.active) { background-color: #e3e6f0; }
+</style>
+
+<div class="container py-4">
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-white pt-4 pb-0 border-bottom-0">
+            <ul class="nav nav-tabs border-bottom" id="docTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="about-tab" data-bs-toggle="tab" data-bs-target="#about-pane" type="button" role="tab">
+                        <i class="fas fa-info-circle mr-1"></i> About
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="arch-tab" data-bs-toggle="tab" data-bs-target="#arch-pane" type="button" role="tab">
+                        <i class="fas fa-project-diagram mr-1"></i> System Architecture
+                    </button>
+                </li>
+            </ul>
+        </div>
+        
+        <div class="card-body p-4 p-md-5">
+            <div class="tab-content" id="docTabsContent">
+                
+                <div class="tab-pane fade show active markdown-body" id="about-pane" role="tabpanel">
+                    {{ about_content | safe }}
+                </div>
+                
+                <div class="tab-pane fade markdown-body" id="arch-pane" role="tabpanel">
+                    {{ desc_content | safe }}
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

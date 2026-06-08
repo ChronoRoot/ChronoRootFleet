@@ -41,10 +41,17 @@ async def fast_monitor_loop():
 
         active_payloads = [data for ip, data in results if data and "identity" in data]
         
-        # 1. Update the RAM-Disk Pool
+        # 1. Update the RAM-Disk Pool safely (In-Place)
         new_state = {p["identity"]["mac"]: p for p in active_payloads}
-        LIVE_FLEET_STATE.clear()
-        LIVE_FLEET_STATE.update(new_state)
+        
+        # A. Update or insert active nodes
+        for mac, data in new_state.items():
+            LIVE_FLEET_STATE[mac] = data
+            
+        # B. Safely remove nodes that dropped offline
+        stale_macs = [mac for mac in LIVE_FLEET_STATE.keys() if mac not in new_state]
+        for stale_mac in stale_macs:
+            LIVE_FLEET_STATE.pop(stale_mac, None)
 
         # 2. Database Sync & Drop-off Detection
         with Session(engine) as session:

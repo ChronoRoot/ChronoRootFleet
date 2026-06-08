@@ -1,7 +1,7 @@
 from typing import Dict, Any
 
 # --- NETWORK CONFIGURATION ---
-TARGET_SUBNET_BASE = "10.42.0"  
+TARGET_SUBNET_BASE = "192.168.1"  
 SWEEP_INTERVAL = 60 
 API_TIMEOUT = 3.0               
 
