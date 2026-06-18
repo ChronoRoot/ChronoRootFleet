@@ -113,312 +113,264 @@
         fetchFleetData(); 
     }
 
+    let fleetPollTimer = null;
+    let fleetPollIntervalMs = 5000;
+
+    function getFleetPollInterval(nodeCount) {
+        return nodeCount > 10 ? 12000 : 5000;
+    }
+
+    function ensureFleetPolling() {
+        if (fleetPollTimer) return;
+        fleetPollTimer = setInterval(() => {
+            if (document.visibilityState === 'visible') fetchFleetData();
+        }, fleetPollIntervalMs);
+    }
+
+    function updatePollIntervalIfNeeded(nodeCount) {
+        const next = getFleetPollInterval(nodeCount);
+        if (next === fleetPollIntervalMs) return;
+        fleetPollIntervalMs = next;
+        if (fleetPollTimer) {
+            clearInterval(fleetPollTimer);
+            fleetPollTimer = null;
+        }
+        ensureFleetPolling();
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') fetchFleetData();
+    });
+
+    function formatStaleBadge(node) {
+        if (!node.telemetry_stale) return '';
+        const age = node.telemetry_age_seconds;
+        const label = age != null ? `Updated ${age}s ago` : 'Telemetry stale';
+        return `<div class="mt-1"><span class="badge bg-warning text-dark px-2 py-1"><i class="fas fa-hourglass-half"></i> ${label}</span></div>`;
+    }
+
+    function renderOfflineRow(node, checkboxHtml) {
+        const desc = node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">No location set...</span>';
+        const safeHost = (node.hostname || '').replace(/'/g, "\\'");
+        return `
+            <tr class="row-hover" style="opacity: 0.6; background-color: #f8f9fa;">
+                <td class="text-center">${checkboxHtml}</td>
+                <td>
+                    <div class="font-weight-bold text-dark text-truncate mb-1" style="font-size: 1.05rem; cursor: pointer;"
+                        onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
+                        <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                    </div>
+                    <div class="text-muted small text-truncate mb-2" style="font-size: 0.82rem;">${desc}</div>
+                    <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;"><i class="fas fa-microchip"></i> MAC: ${node.mac}</div>
+                    <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;"><i class="fas fa-network-wired"></i> IP: ${node.ip}</div>
+                    <div class="text-muted small mt-1">Last seen: ${node.last_seen || 'Unknown'}</div>
+                </td>
+                <td colspan="2" class="text-muted small font-italic align-middle">Module offline</td>
+                <td>
+                    <button onclick="removeModuleFromFleet('${node.mac}', '${safeHost}')" class="btn btn-sm btn-outline-secondary w-100 justify-content-start">
+                        <div style="width: 24px; text-align: center;"><i class="fas fa-trash-alt"></i></div> Remove from Fleet
+                    </button>
+                </td>
+            </tr>`;
+    }
+
+    function renderOnlineRow(node, checkboxHtml) {
+        const storageWarn = node.storage_pct > 85;
+        const camsOk = node.cams_ok === node.cams_total;
+        const syncData = node.sync_status || {};
+        const staleBadge = formatStaleBadge(node);
+
+        let irStatusText = node.ir_status || "UNKNOWN";
+        let irColorClass = "text-muted";
+        if (irStatusText === "WORKING") irColorClass = "text-success font-weight-bold";
+        else if (irStatusText === "NOT DETECTED") irColorClass = "text-danger font-weight-bold";
+        else if (irStatusText === "UNKNOWN") irColorClass = "text-warning font-weight-bold";
+
+        const syncStatus = node.time_sync_status || "";
+        const driftTitle = node.drift_seconds !== "N/A"
+            ? `Drift at last status poll: ${node.drift_seconds}s`
+            : "Drift at last status poll";
+        let timeBadge = "";
+        if (node.telemetry_stale) {
+            const staleDrift = node.drift_seconds !== "N/A"
+                ? `<br><small>Drift: ${node.drift_seconds}s</small>`
+                : "";
+            timeBadge = `<span class="text-warning font-weight-bold" title="${driftTitle}"><i class="fas fa-hourglass-half"></i> ${syncStatus}${staleDrift}</span>`;
+        } else if (syncStatus.includes("Synced")) {
+            timeBadge = `<span class="text-success font-weight-bold" title="${driftTitle}"><i class="fas fa-check-circle"></i> ${syncStatus}</span>`;
+        } else if (syncStatus.includes("Drift")) {
+            let driftText = node.drift_seconds !== "N/A" ? `Drift: ${node.drift_seconds}s` : "Drift: Unknown";
+            let readableDrift = driftText;
+            if (typeof node.drift_seconds === "number" && node.drift_seconds > 120) {
+                readableDrift = `Drift: ${Math.floor(node.drift_seconds / 60)} mins`;
+            }
+            timeBadge = `<span class="text-danger font-weight-bold" title="${driftTitle}"><i class="fas fa-times-circle"></i> ${syncStatus}<br><small>${readableDrift}</small></span>`;
+        } else {
+            timeBadge = `<span class="text-warning font-weight-bold" title="${driftTitle}"><i class="fas fa-exclamation-triangle"></i> ${syncStatus}</span>`;
+        }
+
+        let uptimeHtml = node.uptime && node.uptime !== "Unknown"
+            ? `<div class="text-dark font-weight-bold"><i class="fas fa-stopwatch text-secondary"></i> ${node.uptime}</div>`
+            : `<div class="text-muted"><i class="fas fa-stopwatch text-secondary" style="opacity: 0.5;"></i> Unknown</div>`;
+
+        let alertHtml = '';
+        if (node.issues && node.issues.length > 0) {
+            alertHtml = `<div class="mt-2 badge bg-danger text-white px-2 py-1 w-100 text-start text-truncate"><i class="fas fa-exclamation-triangle"></i> ${node.issues.join(', ')}</div>`;
+        }
+
+        let jobHtml = '<div class="text-muted small font-italic py-2"><i class="fas fa-bed"></i> System Idle (No active experiment)</div>';
+        if (node.is_diagnosing) {
+            jobHtml = `
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <strong class="text-info text-truncate"><i class="fas fa-stethoscope fa-pulse mr-1"></i> Hardware Scan</strong>
+                    <span class="badge border border-info text-info bg-white small">DIAGNOSING</span>
+                </div>
+                <div class="text-muted small font-italic mb-3">Testing I2C bus and active camera ports...</div>
+                <div class="progress rounded-pill shadow-sm" style="height: 8px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-info w-100"></div>
+                </div>`;
+        } else if (node.has_job) {
+            const statCol = node.job_status === 'ERROR' ? 'text-danger' : (node.job_status === 'SCHEDULED' ? 'text-warning' : 'text-primary');
+            const barColor = node.job_status === 'ERROR' ? 'bg-danger' : (node.job_status === 'SCHEDULED' ? 'bg-warning' : 'bg-success progress-bar-striped progress-bar-animated');
+            const progressText = node.job_status === 'SCHEDULED' ? 'Waiting to start...' : `${node.taken} of ${node.expected} images per camera`;
+            jobHtml = `
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <strong class="${statCol} text-truncate" style="max-width: 180px;" title="${node.job_name}">${node.job_name || 'Untitled'}</strong>
+                    <span class="badge border ${statCol} bg-white small">${node.job_status}</span>
+                </div>
+                <div class="text-muted small text-truncate" title="Folder Name"><i class="fas fa-folder-open text-warning"></i> ${node.local_exp_id || 'Unknown Folder'}</div>
+                ${node.job_desc ? `<div class="text-muted small font-italic mb-2 text-truncate" title="${node.job_desc}">"${node.job_desc}"</div>` : '<div class="mb-2"></div>'}
+                <div class="d-flex justify-content-between align-items-center mb-1 hw-detail text-muted">
+                    <span><i class="fas fa-camera"></i> ${progressText}</span>
+                    <span class="font-weight-bold">${node.progress_pct}%</span>
+                </div>
+                <div class="mini-bar-container mb-2"><div class="mini-bar ${barColor}" style="width: ${node.progress_pct}%;"></div></div>
+                <div class="hw-detail text-primary font-weight-bold bg-light border rounded px-2 py-1 d-inline-block mt-1">
+                    <i class="fas fa-clock"></i> Next Capture: ${node.next_pic_time}
+                </div>`;
+        }
+
+        const lockHtml = node.is_locked
+            ? `<span class="text-warning font-weight-bold" title="Owner: ${node.lock_owner}"><i class="fas fa-lock"></i> Locked (${node.lock_owner})</span>`
+            : `<span class="text-success"><i class="fas fa-check-circle"></i> Free</span>`;
+
+        let syncHtml = '';
+        if (syncData.is_syncing) {
+            syncHtml = `<div class="text-info font-weight-bold text-truncate" title="${syncData.status_msg}"><i class="fas fa-sync fa-spin"></i> Syncing</div><div class="text-muted small text-truncate">${syncData.status_msg}</div>`;
+        } else if (syncData.last_error) {
+            syncHtml = `<div class="text-danger font-weight-bold"><i class="fas fa-exclamation-triangle"></i> Sync Failed</div><div class="text-muted small text-truncate" title="${syncData.last_error}">${syncData.last_error}</div>`;
+        } else if (syncData.sync_enabled) {
+            syncHtml = `<div class="text-success"><i class="fas fa-check-circle"></i> Auto-Sync ON</div><div class="text-muted small">Last: ${syncData.last_success || 'Never'}</div>`;
+        } else {
+            syncHtml = `<div class="text-muted"><i class="fas fa-times-circle"></i> Sync OFF</div>`;
+        }
+
+        const safeHost = (node.hostname || '').replace(/'/g, "\\'");
+        const rawHost = (node.raw_hostname || node.hostname || '').replace(/'/g, "\\'");
+
+        return `
+            <tr class="row-hover${node.telemetry_stale ? ' table-warning' : ''}">
+                <td class="text-center">${checkboxHtml}</td>
+                <td>
+                    <div class="font-weight-bold text-dark text-truncate mb-1" style="font-size: 1.05rem; cursor: pointer;"
+                        onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
+                        <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                    </div>
+                    <div class="text-muted small text-truncate mb-2" style="font-size: 0.82rem;">${node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">Enter description...</span>'}</div>
+                    <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;"><i class="fas fa-microchip"></i> MAC: ${node.mac}</div>
+                    <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;"><i class="fas fa-network-wired"></i> IP: ${node.ip}</div>
+                    ${staleBadge}
+                    ${alertHtml}
+                </td>
+                <td>${jobHtml}</td>
+                <td>
+                    <div class="row hw-detail" style="font-size: 0.85rem;">
+                        <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">Cameras</div><div class="${!camsOk ? 'text-danger font-weight-bold' : 'text-success'}"><i class="fas fa-video"></i> ${node.cams_ok}/${node.cams_total} OK</div></div>
+                        <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">Hardware</div><div class="text-primary font-weight-bold"><i class="fas fa-microchip"></i> ${node.hardware_desc || 'Unknown'}</div></div>
+                        <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">Storage</div><div class="${storageWarn ? 'text-danger font-weight-bold' : 'text-dark'}"><i class="fas fa-hdd"></i> ${node.storage_pct}% Used</div></div>
+                        <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">IR Lights</div><div class="${irColorClass}"><i class="fas fa-lightbulb"></i> ${irStatusText}</div></div>
+                        <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">Last Picture</div><div class="text-dark"><i class="fas fa-history"></i> ${node.last_pic_time}</div></div>
+                        <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">System Clock</div><div>${timeBadge}</div></div>
+                        <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">Network Sync</div><div>${syncHtml}</div></div>
+                        <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">System Uptime</div><div>${uptimeHtml}</div></div>
+                        <div class="col-12 mt-1 pt-2 border-top d-flex align-items-center"><div class="text-muted small text-uppercase me-2" style="margin-right: 8px;">Hardware Lock:</div><div>${lockHtml}</div></div>
+                    </div>
+                </td>
+                <td>
+                    <div class="d-flex flex-column gap-2">
+                        <button onclick="window.location.href = '/remote/${node.mac}'" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start"><div style="width: 24px; text-align: center;"><i class="fas fa-desktop"></i></div> Remote View</button>
+                        <button onclick="runSingleDiagnostic('${node.mac}', '${safeHost}')" class="btn btn-sm btn-light border shadow-sm text-warning w-100 justify-content-start"><div style="width: 24px; text-align: center;"><i class="fas fa-stethoscope"></i></div> Diagnostic</button>
+                        <button onclick="openConfigModal('${node.mac}', '${rawHost}')" class="btn btn-sm btn-light border shadow-sm text-dark w-100 justify-content-start"><div style="width: 24px; text-align: center;"><i class="fas fa-cog"></i></div> Edit Config</button>
+                        <button onclick="rebootSingleNode('${node.mac}', '${safeHost}')" class="btn btn-sm btn-outline-danger w-100 justify-content-start"><div style="width: 24px; text-align: center;"><i class="fas fa-power-off"></i></div> Reboot Node</button>
+                        <button onclick="showHistory('${node.mac}', '${safeHost}', '${node.ip}')" class="btn btn-sm btn-light border shadow-sm text-secondary w-100 justify-content-start"><div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> Experiment History</button>
+                        <button onclick="triggerSingleSync('${node.mac}', '${safeHost}')" class="btn btn-sm btn-light border shadow-sm text-info w-100 justify-content-start" ${syncData.is_syncing ? 'disabled' : ''}><div style="width: 24px; text-align: center;"><i class="fas fa-cloud-upload-alt"></i></div> Launch Sync</button>
+                        ${syncData.is_syncing ? `<button onclick="cancelSingleSync('${node.mac}', '${safeHost}')" class="btn btn-sm btn-outline-danger w-100 justify-content-start mt-1"><div style="width: 24px; text-align: center;"><i class="fas fa-times"></i></div> Abort Transfer</button>` : ''}
+                    </div>
+                </td>
+            </tr>`;
+    }
+
     // --- DATA RENDERING ---
     async function fetchFleetData() {
         try {
-            const response = await fetch('/api/fleet/live-digested');
-            let rawData = await response.json(); 
-            
+            const response = await fetch('/api/fleet/live-digested', { cache: 'no-store' });
+            let rawData = await response.json();
+
             let nodesList = Array.isArray(rawData) ? rawData : (rawData.nodes || []);
             let masterTime = rawData.master_time || "N/A";
-            
-            if(document.getElementById('last-sync-time')) {
+
+            if (document.getElementById('last-sync-time')) {
                 document.getElementById('last-sync-time').innerHTML = `
                     <span class="text-muted me-3" style="margin-right: 15px;">Last scan: ${new Date().toLocaleTimeString()}</span>
                     <span class="badge bg-primary text-white px-2 py-1 shadow-sm"><i class="fas fa-server"></i> Master Time: ${masterTime}</span>
                 `;
             }
-            
-            // 1. Initialize Counters
+
             let counts = { 'ALL': 0, 'RUNNING': 0, 'WAITING': 0, 'IDLE': 0, 'OFFLINE': 0, 'ATTENTION': 0 };
             let html = '';
-            
+
             let hideToggle = document.getElementById('hideOfflineToggle');
             let hideOffline = hideToggle ? hideToggle.checked : false;
 
             nodesList.forEach(node => {
-                
-                // 2. Tally Counts
-                counts['ALL']++;
-                counts[node.primary_state]++;
-                if (node.needs_attention) counts['ATTENTION']++;
+                try {
+                    counts['ALL']++;
+                    if (counts[node.primary_state] !== undefined) counts[node.primary_state]++;
+                    if (node.needs_attention) counts['ATTENTION']++;
 
-                // 3. Apply Visibility Filters
-                if (hideOffline && !node.is_online) return; 
-                if (currentView === 'ATTENTION' && !node.needs_attention) return;
-                if (currentView !== 'ALL' && currentView !== 'ATTENTION' && currentView !== node.primary_state) return;
+                    if (hideOffline && !node.is_online) return;
+                    if (currentView === 'ATTENTION' && !node.needs_attention) return;
+                    if (currentView !== 'ALL' && currentView !== 'ATTENTION' && currentView !== node.primary_state) return;
 
-                // 4. Disable Checkbox if Offline
-                let isChecked = selectedMacs.has(node.mac) ? 'checked' : '';
-                let checkboxHtml = node.is_online 
-                    ? `<input type="checkbox" class="module-checkbox" value="${node.mac}" onclick="toggleSelection('${node.mac}')" ${isChecked}>` 
-                    : `<input type="checkbox" class="module-checkbox" disabled title="Cannot select offline modules">`;
+                    const isChecked = selectedMacs.has(node.mac) ? 'checked' : '';
+                    const checkboxHtml = node.is_online
+                        ? `<input type="checkbox" class="module-checkbox" value="${node.mac}" onclick="toggleSelection('${node.mac}')" ${isChecked}>`
+                        : `<input type="checkbox" class="module-checkbox" disabled title="Cannot select offline modules">`;
 
-                // --- OFFLINE RENDER ---
-                if (!node.is_online) {
-                    html += `
-                    <tr class="row-hover" style="opacity: 0.6; background-color: #f8f9fa;">
-                        <td class="text-center">${checkboxHtml}</td>
-                        <td>
-                        <div class="font-weight-bold text-dark text-truncate mb-1" style="font-size: 1.05rem; cursor: pointer;" 
-                            onclick="openIdentityModal('${node.mac}', '${node.hostname}', '${node.description || ''}')" title="Click to edit identity">
-                            <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
-                        </div>
-                        
-                        <div class="text-muted small text-truncate mb-2" style="font-size: 0.82rem;" title="${node.description || 'No description'}">
-                            ${node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">No location set...</span>'}
-                        </div>
-                        
-                        <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="MAC Address">
-                            <i class="fas fa-desktop"></i> Hostname: ${node.hostname}
-                        </div>
-                        <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="MAC Address">
-                            <i class="fas fa-microchip"></i> MAC: ${node.mac}
-                        </div>
-                        <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="IP Address">
-                            <i class="fas fa-network-wired"></i> IP: ${node.ip}
-                        </div>
-                        
-                    </tr>`;
-                    return; // Skip the rest of the loop for this node
+                    html += node.is_online ? renderOnlineRow(node, checkboxHtml) : renderOfflineRow(node, checkboxHtml);
+                } catch (rowErr) {
+                    console.error('Row render error for', node.mac, rowErr);
                 }
-
-                // --- ONLINE RENDER ---
-                let storageWarn = node.storage_pct > 85;
-                let camsOk = node.cams_ok === node.cams_total;
-
-                let irStatusText = node.ir_status || "UNKNOWN";
-                let irColorClass = "text-muted"; 
-                if (irStatusText === "WORKING") irColorClass = "text-success font-weight-bold";
-                else if (irStatusText === "NOT DETECTED") irColorClass = "text-danger font-weight-bold";
-                else if (irStatusText === "UNKNOWN") irColorClass = "text-warning font-weight-bold";
-                
-                let timeBadge = "";
-                if (node.time_sync_status.includes("Synced")) {
-                    timeBadge = `<span class="text-success font-weight-bold" title="Drift: ${node.drift_seconds}s"><i class="fas fa-check-circle"></i> ${node.time_sync_status}</span>`;
-                } else if (node.time_sync_status.includes("Drift")) {
-                    let driftText = node.drift_seconds !== "N/A" ? `Drift: ${node.drift_seconds}s` : "Drift: Unknown";
-                    let readableDrift = driftText;
-                    if (typeof node.drift_seconds === "number" && node.drift_seconds > 120) {
-                        readableDrift = `Drift: ${Math.floor(node.drift_seconds / 60)} mins`;
-                    }
-                    timeBadge = `<span class="text-danger font-weight-bold" title="${driftText}"><i class="fas fa-times-circle"></i> ${node.time_sync_status}<br><small>${readableDrift}</small></span>`;
-                } else {
-                    timeBadge = `<span class="text-warning font-weight-bold" title="${node.drift_seconds}"><i class="fas fa-exclamation-triangle"></i> ${node.time_sync_status}</span>`;
-                }
-
-                // --- UPTIME RENDER LOGIC ---
-                let uptimeHtml = '';
-                if (node.uptime && node.uptime !== "Unknown") {
-                    uptimeHtml = `<div class="text-dark font-weight-bold"><i class="fas fa-stopwatch text-secondary"></i> ${node.uptime}</div>`;
-                } else {
-                    uptimeHtml = `<div class="text-muted"><i class="fas fa-stopwatch text-secondary" style="opacity: 0.5;"></i> Unknown</div>`;
-                }
-                
-                let alertHtml = '';
-                if (node.issues && node.issues.length > 0) {
-                    alertHtml = `<div class="mt-2 badge bg-danger text-white px-2 py-1 w-100 text-start text-truncate"><i class="fas fa-exclamation-triangle"></i> ${node.issues.join(', ')}</div>`;
-                }
-
-                let jobHtml = '<div class="text-muted small font-italic py-2"><i class="fas fa-bed"></i> System Idle (No active experiment)</div>';
-                
-                if (node.is_diagnosing) {
-                    jobHtml = `
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <strong class="text-info text-truncate"><i class="fas fa-stethoscope fa-pulse mr-1"></i> Hardware Scan</strong>
-                            <span class="badge border border-info text-info bg-white small">DIAGNOSING</span>
-                        </div>
-                        <div class="text-muted small font-italic mb-3">Testing I2C bus and active camera ports...</div>
-                        <div class="progress rounded-pill shadow-sm" style="height: 8px;">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-info w-100"></div>
-                        </div>
-                    `;
-                } else if (node.has_job) {
-                    let statCol = node.job_status === 'ERROR' ? 'text-danger' : (node.job_status === 'SCHEDULED' ? 'text-warning' : 'text-primary');
-                    let barColor = node.job_status === 'ERROR' ? 'bg-danger' : (node.job_status === 'SCHEDULED' ? 'bg-warning' : 'bg-success progress-bar-striped progress-bar-animated');
-                    let progressText = node.job_status === 'SCHEDULED' ? 'Waiting to start...' : `${node.taken} of ${node.expected} images per camera`;
-
-                    jobHtml = `
-                        <div class="d-flex justify-content-between align-items-center mb-1">
-                            <strong class="${statCol} text-truncate" style="max-width: 180px;" title="${node.job_name}">${node.job_name || 'Untitled'}</strong>
-                            <span class="badge border ${statCol} bg-white small">${node.job_status}</span>
-                        </div>
-                        <div class="text-muted small text-truncate" title="Folder Name">
-                            <i class="fas fa-folder-open text-warning"></i> ${node.local_exp_id || 'Unknown Folder'}
-                        </div>
-                        ${node.job_desc ? `<div class="text-muted small font-italic mb-2 text-truncate" title="${node.job_desc}">"${node.job_desc}"</div>` : '<div class="mb-2"></div>'}
-                        <div class="d-flex justify-content-between align-items-center mb-1 hw-detail text-muted">
-                            <span><i class="fas fa-camera"></i> ${progressText}</span>
-                            <span class="font-weight-bold">${node.progress_pct}%</span>
-                        </div>
-                        <div class="mini-bar-container mb-2">
-                            <div class="mini-bar ${barColor}" style="width: ${node.progress_pct}%;"></div>
-                        </div>
-                        <div class="hw-detail text-primary font-weight-bold bg-light border rounded px-2 py-1 d-inline-block mt-1">
-                            <i class="fas fa-clock"></i> Next Capture: ${node.next_pic_time}
-                        </div>
-                    `;
-                }
-
-                let lockHtml = node.is_locked ? 
-                    `<span class="text-warning font-weight-bold" title="Owner: ${node.lock_owner}"><i class="fas fa-lock"></i> Locked (${node.lock_owner})</span>` : 
-                    `<span class="text-success"><i class="fas fa-check-circle"></i> Free</span>`;
-
-                // --- SYNC RENDER LOGIC ---
-                let syncData = node.sync_status || {};
-                let syncHtml = '';
-
-                if (syncData.is_syncing) {
-                    syncHtml = `
-                        <div class="text-info font-weight-bold text-truncate" title="${syncData.status_msg}">
-                            <i class="fas fa-sync fa-spin"></i> Syncing
-                        </div>
-                        <div class="text-muted small text-truncate">${syncData.status_msg}</div>
-                    `;
-                } else if (syncData.last_error) {
-                    syncHtml = `
-                        <div class="text-danger font-weight-bold"><i class="fas fa-exclamation-triangle"></i> Sync Failed</div>
-                        <div class="text-muted small text-truncate" title="${syncData.last_error}">${syncData.last_error}</div>
-                    `;
-                } else if (syncData.sync_enabled) {
-                    syncHtml = `
-                        <div class="text-success"><i class="fas fa-check-circle"></i> Auto-Sync ON</div>
-                        <div class="text-muted small">Last: ${syncData.last_success || 'Never'}</div>
-                    `;
-                } else {
-                    syncHtml = `
-                        <div class="text-muted"><i class="fas fa-times-circle"></i> Sync OFF</div>
-                    `;
-                }
-
-                html += `
-                    <tr class="row-hover">
-                        <td class="text-center">
-                            ${checkboxHtml}
-                        </td>
-                        <td>
-                            <div class="font-weight-bold text-dark text-truncate mb-1" style="font-size: 1.05rem; cursor: pointer;" 
-                                onclick="openIdentityModal('${node.mac}', '${node.hostname}', '${node.description || ''}')" title="Click to edit identity">
-                                <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
-                            </div>
-                            
-                            <div class="text-muted small text-truncate mb-2" style="font-size: 0.82rem;" title="${node.description || 'No description'}">
-                                ${node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">Enter description...</span>'}
-                            </div>
-                            <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="MAC Address">
-                                <i class="fas fa-desktop"></i> Hostname: ${node.hostname}
-                            </div>
-
-                            <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="MAC Address">
-                                <i class="fas fa-microchip"></i> MAC: ${node.mac} 
-                            </div>
-                            <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;" title="IP Address">
-                                <i class="fas fa-network-wired"></i> IP: ${node.ip}
-                            </div>
-                            
-                            ${alertHtml}
-                        </td>
-                        <td>${jobHtml}</td>
-                        <td>
-                            <div class="row hw-detail" style="font-size: 0.85rem;">
-                                <div class="col-6 mb-2">
-                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Cameras</div>
-                                    <div class="${!camsOk ? 'text-danger font-weight-bold' : 'text-success'}"><i class="fas fa-video"></i> ${node.cams_ok}/${node.cams_total} OK</div>
-                                </div>
-                                <div class="col-6 mb-2">
-                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Hardware</div>
-                                    <div class="text-primary font-weight-bold"><i class="fas fa-microchip"></i> ${node.hardware_desc || 'Unknown'}</div>
-                                </div>
-                                
-                                <div class="col-6 mb-2">
-                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Storage</div>
-                                    <div class="${storageWarn ? 'text-danger font-weight-bold' : 'text-dark'}"><i class="fas fa-hdd"></i> ${node.storage_pct}% Used</div>
-                                </div>
-                                <div class="col-6 mb-2">
-                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">IR Lights</div>
-                                    <div class="${irColorClass}"><i class="fas fa-lightbulb"></i> ${irStatusText}</div>
-                                </div>
-
-                                <div class="col-6 mb-2">
-                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Last Picture</div>
-                                    <div class="text-dark"><i class="fas fa-history"></i> ${node.last_pic_time}</div>
-                                </div>
-                                <div class="col-6 mb-2">
-                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">System Clock</div>
-                                    <div>${timeBadge}</div>
-                                </div>
-
-                                <div class="col-6 mb-2">
-                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">Network Sync</div>
-                                    <div>${syncHtml}</div>
-                                </div>
-
-                                <div class="col-6 mb-2">
-                                    <div class="text-muted small text-uppercase" style="font-size: 0.65rem; letter-spacing: 0.5px;">System Uptime</div>
-                                    <div>${uptimeHtml}</div>
-                                </div>
-                                
-                                <div class="col-12 mt-1 pt-2 border-top d-flex align-items-center">
-                                    <div class="text-muted small text-uppercase me-2" style="font-size: 0.65rem; letter-spacing: 0.5px; margin-right: 8px;">Hardware Lock:</div>
-                                    <div>${lockHtml}</div>
-                                </div>
-                            </div>
-                        </td>
-                        <td>
-                            <div class="d-flex flex-column gap-2">
-                                <button onclick="window.location.href = '/remote/${node.mac}'" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-desktop"></i></div> Remote View
-                                </button>
-                                
-                                <button onclick="runSingleDiagnostic('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-light border shadow-sm text-warning w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-stethoscope"></i></div> Diagnostic
-                                </button>
-                                
-                                <button onclick="openConfigModal('${node.mac}', '${node.raw_hostname || node.hostname}')" class="btn btn-sm btn-light border shadow-sm text-dark w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-cog"></i></div> Edit Config
-                                </button>
-                                
-                                <button onclick="rebootSingleNode('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-outline-danger w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-power-off"></i></div> Reboot Node
-                                </button>
-                                
-                                <button onclick="showHistory('${node.mac}', '${node.hostname}', '${node.ip}')" class="btn btn-sm btn-light border shadow-sm text-secondary w-100 justify-content-start">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-history"></i></div> Experiment History
-                                </button>
-
-                                <button onclick="triggerSingleSync('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-light border shadow-sm text-info w-100 justify-content-start" ${syncData.is_syncing ? 'disabled' : ''}>
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-cloud-upload-alt"></i></div> Launch Sync
-                                </button>
-
-                                ${syncData.is_syncing ? `
-                                <button onclick="cancelSingleSync('${node.mac}', '${node.hostname}')" class="btn btn-sm btn-outline-danger w-100 justify-content-start mt-1">
-                                    <div style="width: 24px; text-align: center;"><i class="fas fa-times"></i></div> Abort Transfer
-                                </button>` : ''}
-                            </div>
-                        </td>
-                    </tr>
-                `;
             });
 
-            // 5. Update DOM Badges
             Object.keys(counts).forEach(key => {
                 let badge = document.getElementById(`count-${key}`);
                 if (badge) badge.innerText = counts[key];
             });
 
-            // Update top bar stats
-            if(document.getElementById('stat-total')) document.getElementById('stat-total').innerText = counts['ALL'];
-            if(document.getElementById('stat-running')) document.getElementById('stat-running').innerText = counts['RUNNING'];
-            if(document.getElementById('stat-errors')) document.getElementById('stat-errors').innerText = counts['ATTENTION'];
+            if (document.getElementById('stat-total')) document.getElementById('stat-total').innerText = counts['ALL'];
+            if (document.getElementById('stat-running')) document.getElementById('stat-running').innerText = counts['RUNNING'];
+            if (document.getElementById('stat-errors')) document.getElementById('stat-errors').innerText = counts['ATTENTION'];
 
             document.getElementById('fleet-table-body').innerHTML = html || '<tr><td colspan="5" class="text-center py-5 text-muted"><i class="fas fa-info-circle fa-2x mb-3 text-secondary"></i><br>No modules match this view.</td></tr>';
-            
-        } catch (error) { 
-            console.error("Data fetch error", error); 
+
+            updatePollIntervalIfNeeded(nodesList.length);
+        } catch (error) {
+            console.error("Data fetch error", error);
         }
     }
 
-    setInterval(fetchFleetData, 5000);
+    ensureFleetPolling();
     fetchFleetData();
 
     // --- NODE ACTIONS ---
@@ -441,6 +393,24 @@
         document.getElementById('ident-desc').value = currentDesc;
         
         new bootstrap.Modal(document.getElementById('identityModal')).show();
+    }
+
+    async function removeModuleFromFleet(mac, hostname) {
+        const confirmed = await asyncConfirm(
+            'Remove from Fleet',
+            `Remove <strong>${hostname}</strong> from this commander?<br><small class="text-muted">Use when a module was moved to another chamber. Experiment history is preserved.</small>`
+        );
+        if (!confirmed) return;
+        try {
+            const res = await fetch(`/api/fleet/db/modules/${encodeURIComponent(mac)}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('Delete failed');
+            selectedMacs.delete(mac);
+            document.getElementById('selected-count').innerText = selectedMacs.size;
+            showToast(`${hostname} removed from fleet registry.`, 'success');
+            fetchFleetData();
+        } catch (e) {
+            showToast('Failed to remove module from fleet.', 'danger');
+        }
     }
 
     async function saveIdentity() {

@@ -1,7 +1,7 @@
 import os
 from typing import Optional, List
 from datetime import datetime
-from sqlmodel import SQLModel, Field, Relationship, create_engine
+from sqlmodel import SQLModel, Field, Relationship, create_engine, Session, select
 
 # --- MODELS ---
 class RobotModule(SQLModel, table=True):
@@ -58,3 +58,20 @@ engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread"
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
+
+
+def find_robot_module(session: Session, mac: str) -> Optional[RobotModule]:
+    """Case-insensitive MAC lookup (legacy DB rows may use mixed case PKs)."""
+    from app.core.state import normalize_mac
+
+    norm = normalize_mac(mac)
+    mod = session.get(RobotModule, norm)
+    if mod:
+        return mod
+    mod = session.get(RobotModule, mac.strip())
+    if mod:
+        return mod
+    for m in session.exec(select(RobotModule)).all():
+        if normalize_mac(m.mac_address) == norm:
+            return m
+    return None

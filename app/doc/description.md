@@ -14,8 +14,9 @@ The system is designed to operate on a dedicated subnetwork (defaulting to `10.4
 
 Because we require **Zero-Touch Module Integration**, individual modules do not broadcast to the Master, nor do they require any custom software modifications to communicate with it. The Master handles network interactions through two distinct engines:
 
-* **The Dual-Engine Sweeper:** * *The Fast Monitor Loop (15s):* Rapidly polls known nodes via highly concurrent async HTTP to update an in-memory RAM-disk with live metrics (uptime, storage, current picture count). This allows the frontend to refresh instantly without thrashing the database.
-* *The Slow Discovery Loop (15m):* Broadly sweeps the entire subnet to discover newly plugged-in or rebooted nodes, automatically syncing deep hardware configurations and backfilling historical experiment data into the Master Database.
+* **The Dual-Engine Sweeper:**
+  * *The Fast Monitor Loop (15–25s):* Rapidly polls known nodes (from the database) via staggered concurrent async HTTP to update an in-memory RAM-disk with live metrics. Missed polls use a grace period before a module is marked offline.
+  * *Manual Discovery (on demand):* A full subnet sweep (`.1–.254`) triggered by the **Discover** button on the dashboard. Use this when plugging in new modules or deploying a Fleet Commander in a new chamber. Discovery registers modules and backfills experiment history.
 
 * **The Zero-Touch Reverse Proxy:** To maintain strict network isolation without sacrificing accessibility, the Master Controller features a built-in reverse proxy powered by a custom FastAPI middleware. This allows users to access the native web interface of any individual edge node directly through the Master dashboard. The middleware intercepts and tunnels all traffic (including orphaned static assets) seamlessly, ensuring researchers never need to connect directly to the isolated hardware subnet.
 

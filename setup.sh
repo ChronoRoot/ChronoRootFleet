@@ -38,6 +38,13 @@ User=$USER
 Group=www-data
 WorkingDirectory=/srv/FleetControl
 Environment="PATH=/srv/FleetControl/venv/bin"
+Environment="FLEET_MAX_CONCURRENT_POLLS=12"
+Environment="FLEET_CONNECT_TIMEOUT=3"
+Environment="FLEET_READ_TIMEOUT=15"
+Environment="FLEET_MAX_FETCH_RETRIES=1"
+Environment="FLEET_STALE_AFTER_MISSES=2"
+Environment="FLEET_OFFLINE_GRACE_POLLS=4"
+Environment="FLEET_FAST_POLL_INTERVAL_LARGE=30"
 
 ExecStart=/srv/FleetControl/venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 

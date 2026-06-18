@@ -168,3 +168,24 @@ Navigate to the **Experiment Status** tab. This view tracks the global progress 
 ### 4. Remote Module Access
 
 Need to physically calibrate a camera's focus wheel or check local system logs? Click **Remote View** on any active node in the Fleet Operations table. The Master Controller will securely tunnel into the node, allowing you to interact with its native interface without ever leaving the Fleet Commander.
+
+## Tuning (environment variables)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `FLEET_MAX_CONCURRENT_POLLS` | `12` | Max parallel status polls (fast monitor) |
+| `FLEET_CONNECT_TIMEOUT` | `3` | Seconds to establish TCP to a module |
+| `FLEET_READ_TIMEOUT` | `15` | Seconds to wait for `/api/status` response body |
+| `FLEET_MAX_FETCH_RETRIES` | `1` | Retries per module per poll cycle |
+| `FLEET_FAST_POLL_INTERVAL` | `15` | Minimum seconds between poll cycle starts (small fleet) |
+| `FLEET_FAST_POLL_INTERVAL_LARGE` | `30` | Minimum seconds between poll cycle starts (10+ modules) |
+| `FLEET_STALE_AFTER_MISSES` | `2` | Consecutive missed cycles before yellow (stale) UI |
+| `FLEET_OFFLINE_GRACE_POLLS` | `4` | Consecutive missed cycles before marking a module offline |
+| `FLEET_POLL_TASK_STAGGER` | `0` | Delay between launching each poll task |
+| `FLEET_USE_LIVENESS_PROBE` | off | Short `/api/status` probe before full fetch (set `true` to enable) |
+| `FLEET_DISCOVERY_MAX_CONCURRENT` | `32` | Max parallel requests during manual Discover sweep |
+| `FLEET_TARGET_SUBNET` | `192.168.1` | Subnet base for manual Discover sweep |
+
+Poll health is exposed at `GET /api/fleet/diagnostics`. Check `modules_responded` vs `modules_polled`, `last_cycle_duration_seconds`, and the `errors` breakdown (`ReadTimeout`, `PoolTimeout`, `ConnectError`) when modules flap yellow or offline.
+
+Legacy: `FLEET_POLL_BATCH_SIZE` is an alias for `FLEET_MAX_CONCURRENT_POLLS` if the latter is unset.

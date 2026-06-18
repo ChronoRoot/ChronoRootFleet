@@ -3,12 +3,21 @@ import asyncio
 import httpx
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 from sqlmodel import Session, select
 
 from app.database import RobotModule, engine, ExperimentalBatch, ExperimentRun
-from app.core.state import LIVE_FLEET_STATE
+from app.core.state import (
+    LIVE_FLEET_STATE,
+    HTTP_CLIENT,
+    get_telemetry_meta,
+    normalize_mac,
+    remove_module_from_memory,
+    get_poll_diagnostics,
+    count_presence_grace_modules,
+)
 from app.core.transformers import digest_node_state 
 
 router = APIRouter(prefix="/api/fleet", tags=["Fleet Orchestration"])
@@ -50,12 +59,19 @@ async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_pa
     `get_payload_fn` is an optional callable that takes (mac, node_state) 
     and returns the specific JSON payload for that exact node.
     """
-    async with httpx.AsyncClient() as client:
+    client = HTTP_CLIENT
+    owns_client = False
+    if client is None:
+        client = httpx.AsyncClient()
+        owns_client = True
+
+    try:
         async def call_node(mac):
-            if mac not in LIVE_FLEET_STATE:
+            norm_mac = normalize_mac(mac)
+            if norm_mac not in LIVE_FLEET_STATE:
                 return {"mac": mac, "status": "error", "message": "Offline"}
-            
-            node_state = LIVE_FLEET_STATE[mac]
+
+            node_state = LIVE_FLEET_STATE[norm_mac]
             ip = node_state["identity"]["ip"]
             payload = get_payload_fn(mac, node_state) if get_payload_fn else None
             
@@ -68,7 +84,7 @@ async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_pa
                     res = await client.post(f"http://{ip}/api/{endpoint}", **req_kwargs)
                 elif method == "PUT":
                     res = await client.put(f"http://{ip}/api/{endpoint}", **req_kwargs)
-                else: # GET
+                else:
                     res = await client.get(f"http://{ip}/api/{endpoint}", **req_kwargs)
                     
                 res.raise_for_status()
@@ -83,27 +99,45 @@ async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_pa
                 return {"mac": mac, "status": "error", "message": str(e)}
             
         return await asyncio.gather(*[call_node(m) for m in macs])
+    finally:
+        if owns_client:
+            await client.aclose()
+
+@router.get("/diagnostics")
+async def get_fleet_diagnostics():
+    """Poll monitor health: last cycle stats, error breakdown, live counts."""
+    return JSONResponse(
+        content={
+            "monitor": get_poll_diagnostics(),
+            "live_online_count": len(LIVE_FLEET_STATE),
+            "presence_grace_count": count_presence_grace_modules(),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
 
 @router.get("/live-digested")
-async def get_digested_fleet_state() -> Dict[str, Any]:
+async def get_digested_fleet_state():
     digested_list = []
     master_time_obj = datetime.now()
-    
-    # 1 bulk query is highly performant
+
     with Session(engine) as session:
         db_modules = {m.mac_address: m for m in session.exec(select(RobotModule)).all()}
 
     for mac, db_mod in db_modules.items():
-        raw = LIVE_FLEET_STATE.get(mac, {})
-        
-        # Pass the data through our single source of truth
-        digested_node = digest_node_state(mac, raw, db_mod, master_time_obj)
+        norm_mac = normalize_mac(mac)
+        raw = LIVE_FLEET_STATE.get(norm_mac, LIVE_FLEET_STATE.get(mac, {}))
+        telemetry_meta = get_telemetry_meta(norm_mac)
+        digested_node = digest_node_state(mac, raw, db_mod, master_time_obj, telemetry_meta)
         digested_list.append(digested_node)
-        
-    return {
-        "master_time": master_time_obj.strftime("%Y-%m-%d %H:%M:%S"),
-        "nodes": digested_list
-    }
+
+    return JSONResponse(
+        content={
+            "master_time": master_time_obj.strftime("%Y-%m-%d %H:%M:%S"),
+            "nodes": digested_list,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 # --- 2. SWARM COMMANDS ---
 @router.post("/bulk/diagnostic")
@@ -214,12 +248,13 @@ async def launch_global_experiment(req: ExperimentLaunchRequest):
     # PHASE 1: STRICT PRE-FLIGHT VALIDATION
     # ==========================================
     for mac in req.target_macs:
-        if mac not in LIVE_FLEET_STATE:
+        norm_mac = normalize_mac(mac)
+        if norm_mac not in LIVE_FLEET_STATE:
             if req.strict_mode:
                 raise HTTPException(status_code=409, detail=f"Node {mac} is offline. Aborting launch.")
             continue # Skip offline node
-            
-        node = LIVE_FLEET_STATE[mac]
+
+        node = LIVE_FLEET_STATE[norm_mac]
         hostname = node["identity"]["hostname"]
         
         # 1A. Hardware Validation
@@ -579,6 +614,23 @@ async def update_module_identity(mac: str, req: IdentityUpdateRequest):
         session.add(mod)
         session.commit()
         return {"status": "success", "alias": mod.alias, "description": mod.description}
+
+
+@router.delete("/db/modules/{mac}")
+async def remove_module_from_fleet(mac: str):
+    """Remove a module from this commander's registry. Experiment history is preserved."""
+    norm_mac = normalize_mac(mac)
+    with Session(engine) as session:
+        mod = session.get(RobotModule, norm_mac) or session.get(RobotModule, mac)
+        if not mod:
+            raise HTTPException(status_code=404, detail="Module not found in DB.")
+        session.delete(mod)
+        session.commit()
+
+    remove_module_from_memory(norm_mac)
+    remove_module_from_memory(mac)
+    return {"status": "success", "message": f"Module {norm_mac} removed from fleet registry."}
+
 
 @router.post("/bulk/time_sync_manual")
 async def sync_time_for_manual_nodes(req: BulkActionRequest):
