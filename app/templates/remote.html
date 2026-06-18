@@ -94,6 +94,11 @@
     <script>
         const PROXY_BASE = '/proxy/{{ mac }}/{{ dest }}';
 
+        function teardownEdgeFrame() {
+            const frame = document.getElementById('edge-frame');
+            if (frame) frame.src = 'about:blank';
+        }
+
         function hardRefreshProxy() {
             const frame = document.getElementById('edge-frame');
             const overlay = document.getElementById('loading-overlay');
@@ -101,6 +106,9 @@
             const sep = PROXY_BASE.includes('?') ? '&' : '?';
             frame.src = PROXY_BASE + sep + '_fleet_refresh=' + Date.now();
         }
+
+        document.querySelector('.remote-header a[href="/"]')?.addEventListener('click', teardownEdgeFrame);
+        window.addEventListener('pagehide', teardownEdgeFrame);
     </script>
     
     {% endif %}

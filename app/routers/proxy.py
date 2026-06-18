@@ -1,3 +1,6 @@
+import asyncio
+import contextlib
+
 import httpx
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
@@ -9,22 +12,32 @@ from app.database import engine, RobotModule
 router = APIRouter(tags=["Zero-Touch Proxy"])
 
 PROXY_TIMEOUT = httpx.Timeout(20.0)
+STREAM_TIMEOUT = httpx.Timeout(connect=20.0, read=None, write=20.0, pool=20.0)
 
 
 def _normalize_content_type(headers: dict) -> str:
     return headers.get("content-type", "").split(";")[0].strip().lower()
 
 
+def _may_be_streaming_request(target_url: str) -> bool:
+    return "video_feed" in target_url
+
+
 async def stream_proxy_request(target_url: str, request: Request, mac: str):
+    use_stream_timeout = _may_be_streaming_request(target_url)
     client = HTTP_CLIENT
     owns_client = False
-    if client is None:
-        client = httpx.AsyncClient(timeout=PROXY_TIMEOUT)
+
+    if use_stream_timeout or client is None:
+        client = httpx.AsyncClient(
+            timeout=STREAM_TIMEOUT if use_stream_timeout else PROXY_TIMEOUT
+        )
         owns_client = True
 
     req_headers = dict(request.headers)
     req_headers.pop("host", None)
     req_headers["X-Fleet-Proxy"] = "1"
+    req_headers["Connection"] = "close"
 
     body = await request.body()
     req = client.build_request(request.method, target_url, headers=req_headers, content=body)
@@ -32,14 +45,30 @@ async def stream_proxy_request(target_url: str, request: Request, mac: str):
     r = await client.send(req, stream=True, follow_redirects=False)
 
     async def stream_and_close():
+        disconnect_event = asyncio.Event()
+
+        async def watch_disconnect():
+            try:
+                while True:
+                    message = await request.receive()
+                    if message["type"] == "http.disconnect":
+                        disconnect_event.set()
+                        return
+            except Exception:
+                disconnect_event.set()
+
+        watcher = asyncio.create_task(watch_disconnect())
         try:
             async for chunk in r.aiter_bytes():
-                if await request.is_disconnected():
+                if disconnect_event.is_set() or await request.is_disconnected():
                     break
                 yield chunk
         except httpx.ReadError:
             pass
         finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
             await r.aclose()
             if owns_client:
                 await client.aclose()
