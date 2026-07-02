@@ -176,6 +176,26 @@
         return sortedNodes;
     }
 
+    function isRowCollapsed(mac) {
+        return collapsedRows.has(mac);
+    }
+
+    function toggleRowCollapsed(mac) {
+        if (collapsedRows.has(mac)) collapsedRows.delete(mac);
+        else collapsedRows.add(mac);
+        fetchFleetData();
+    }
+
+    function collapseAllRows() {
+        (lastFleetNodeMacs || []).forEach(mac => collapsedRows.add(mac));
+        fetchFleetData();
+    }
+
+    function expandAllRows() {
+        collapsedRows.clear();
+        fetchFleetData();
+    }
+
     let fleetPollTimer = null;
     let fleetPollIntervalMs = 5000;
 
@@ -212,6 +232,12 @@
         return `<div class="mt-1"><span class="badge bg-warning text-dark px-2 py-1"><i class="fas fa-hourglass-half"></i> ${label}</span></div>`;
     }
 
+    function renderCollapseToggleButton(mac, collapsed) {
+        const icon = collapsed ? 'fa-expand-alt' : 'fa-compress-alt';
+        const label = collapsed ? 'Expand' : 'Collapse';
+        return `<button class="btn btn-xs btn-outline-secondary py-0 px-2" style="font-size: 0.7rem;" onclick="toggleRowCollapsed('${mac}')"><i class="fas ${icon}"></i> ${label}</button>`;
+    }
+
     function renderOfflineRow(node, checkboxHtml) {
         const desc = node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">No location set...</span>';
         const safeHost = (node.hostname || '').replace(/'/g, "\\'");
@@ -219,9 +245,12 @@
             <tr class="row-hover" style="opacity: 0.6; background-color: #f8f9fa;">
                 <td class="text-center">${checkboxHtml}</td>
                 <td>
-                    <div class="font-weight-bold text-dark text-truncate mb-1" style="font-size: 1.05rem; cursor: pointer;"
-                        onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
-                        <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                    <div class="d-flex align-items-start justify-content-between gap-2 mb-1">
+                        <div class="font-weight-bold text-dark text-truncate" style="font-size: 1.05rem; cursor: pointer;"
+                            onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
+                            <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                        </div>
+                        ${renderCollapseToggleButton(node.mac, false)}
                     </div>
                     <div class="text-muted small text-truncate mb-2" style="font-size: 0.82rem;">${desc}</div>
                     <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;"><i class="fas fa-microchip"></i> MAC: ${node.mac}</div>
@@ -232,6 +261,33 @@
                 <td>
                     <button onclick="removeModuleFromFleet('${node.mac}', '${safeHost}')" class="btn btn-sm btn-outline-secondary w-100 justify-content-start">
                         <div style="width: 24px; text-align: center;"><i class="fas fa-trash-alt"></i></div> Remove from Fleet
+                    </button>
+                </td>
+            </tr>`;
+    }
+
+    function renderOfflineRowCollapsed(node, checkboxHtml) {
+        const desc = node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">No location set...</span>';
+        return `
+            <tr class="row-hover" style="opacity: 0.85;">
+                <td class="text-center">${checkboxHtml}</td>
+                <td>
+                    <div class="d-flex align-items-start justify-content-between gap-2">
+                        <div class="font-weight-bold text-dark text-truncate" style="font-size: 0.96rem;">
+                            ${node.hostname}
+                        </div>
+                        ${renderCollapseToggleButton(node.mac, true)}
+                    </div>
+                    <div class="text-muted small text-truncate">${desc}</div>
+                    <div class="text-muted" style="font-family: monospace; font-size: 0.72rem;">${node.mac} | ${node.ip}</div>
+                </td>
+                <td style="width: 20%;">
+                    <span class="badge bg-secondary">OFFLINE</span>
+                </td>
+                <td><div class="text-muted small">Offline module</div></td>
+                <td>
+                    <button onclick="window.location.href = '/remote/${node.mac}'" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start">
+                        <div style="width: 24px; text-align: center;"><i class="fas fa-desktop"></i></div> Remote View
                     </button>
                 </td>
             </tr>`;
@@ -335,9 +391,12 @@
             <tr class="row-hover${node.telemetry_stale ? ' table-warning' : ''}">
                 <td class="text-center">${checkboxHtml}</td>
                 <td>
-                    <div class="font-weight-bold text-dark text-truncate mb-1" style="font-size: 1.05rem; cursor: pointer;"
-                        onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
-                        <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                    <div class="d-flex align-items-start justify-content-between gap-2 mb-1">
+                        <div class="font-weight-bold text-dark text-truncate" style="font-size: 1.05rem; cursor: pointer;"
+                            onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
+                            <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                        </div>
+                        ${renderCollapseToggleButton(node.mac, false)}
                     </div>
                     <div class="text-muted small text-truncate mb-2" style="font-size: 0.82rem;">${node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">Enter description...</span>'}</div>
                     <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;"><i class="fas fa-microchip"></i> MAC: ${node.mac}</div>
@@ -373,6 +432,72 @@
             </tr>`;
     }
 
+    function renderOnlineRowCollapsed(node, checkboxHtml) {
+        const safeHost = (node.hostname || '').replace(/'/g, "\\'");
+        const desc = node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">No description</span>';
+        const camsClass = node.cams_ok === node.cams_total ? 'bg-success' : 'bg-danger';
+        const storageClass = node.storage_pct > 85 ? 'bg-danger' : (node.storage_pct > 70 ? 'bg-warning text-dark' : 'bg-primary');
+        const statusIssueClass = node.needs_attention ? 'bg-danger' : 'bg-secondary';
+        const irBadge = (node.ir_status && node.ir_status !== 'WORKING')
+            ? `<span class="badge bg-danger">IR ${node.ir_status}</span>`
+            : '';
+        const lightsClass = node.ir_status === 'WORKING' ? 'bg-success' : (node.ir_status === 'NOT DETECTED' ? 'bg-danger' : 'bg-warning text-dark');
+        const lightsBadge = `<span class="badge ${lightsClass}">Lights ${node.ir_status || 'UNKNOWN'}</span>`;
+        const uptimeValue = node.uptime && node.uptime !== 'Unknown' ? node.uptime : 'Unknown';
+        const uptimeClass = uptimeValue === 'Unknown' ? 'bg-secondary' : 'bg-dark';
+        const uptimeBadge = `<span class="badge ${uptimeClass}">Uptime ${uptimeValue}</span>`;
+        const attentionBadge = node.needs_attention && node.issues && node.issues.length > 0
+            ? `<span class="badge ${statusIssueClass}" title="${node.issues.join(', ')}"><i class="fas fa-exclamation-triangle"></i> Attention</span>`
+            : '';
+
+        const statusColor = node.job_status === 'ERROR'
+            ? 'bg-danger'
+            : (node.has_job ? 'bg-primary' : 'bg-secondary');
+        const statusLabel = node.is_diagnosing
+            ? 'DIAGNOSING'
+            : (node.job_status || 'IDLE');
+        const jobLabel = node.has_job
+            ? (node.job_name || 'Active job')
+            : 'System Idle';
+
+        return `
+            <tr class="row-hover${node.telemetry_stale ? ' table-warning' : ''}">
+                <td class="text-center">${checkboxHtml}</td>
+                <td>
+                    <div class="d-flex align-items-start justify-content-between gap-2">
+                        <div class="font-weight-bold text-dark text-truncate" style="font-size: 0.98rem; cursor: pointer;"
+                            onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
+                            <i class="fas fa-edit small text-primary" style="opacity: 0.6;"></i> ${node.hostname}
+                        </div>
+                        ${renderCollapseToggleButton(node.mac, true)}
+                    </div>
+                    <div class="text-muted small text-truncate">${desc}</div>
+                    <div class="text-muted" style="font-family: monospace; font-size: 0.72rem;">${node.mac} | ${node.ip}</div>
+                </td>
+                <td style="width: 20%;">
+                    <div class="d-flex flex-column align-items-start gap-1">
+                        <span class="badge ${statusColor}">${statusLabel}</span>
+                        <span class="text-muted small text-truncate" title="${jobLabel}" style="max-width: 180px;">${jobLabel}</span>
+                    </div>
+                </td>
+                <td>
+                    <div class="d-flex flex-wrap gap-1 align-items-center">
+                        <span class="badge ${camsClass}">${node.cams_ok}/${node.cams_total} Cams</span>
+                        <span class="badge ${storageClass}">${node.storage_pct}% Storage</span>
+                        ${lightsBadge}
+                        ${uptimeBadge}
+                        ${irBadge}
+                        ${attentionBadge}
+                    </div>
+                </td>
+                <td>
+                    <button onclick="window.location.href = '/remote/${node.mac}'" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start">
+                        <div style="width: 24px; text-align: center;"><i class="fas fa-desktop"></i></div> Remote View
+                    </button>
+                </td>
+            </tr>`;
+    }
+
     // --- DATA RENDERING ---
     async function fetchFleetData() {
         try {
@@ -397,6 +522,7 @@
             const searchQuery = normalizeSortText(currentDescriptionQuery);
 
             nodesList = sortFleetNodes(nodesList);
+            lastFleetNodeMacs = nodesList.map(node => node.mac);
 
             nodesList.forEach(node => {
                 try {
@@ -418,7 +544,12 @@
                         ? `<input type="checkbox" class="module-checkbox" value="${node.mac}" onclick="toggleSelection('${node.mac}')" ${isChecked}>`
                         : `<input type="checkbox" class="module-checkbox" disabled title="Cannot select offline modules">`;
 
-                    html += node.is_online ? renderOnlineRow(node, checkboxHtml) : renderOfflineRow(node, checkboxHtml);
+                    const collapsed = isRowCollapsed(node.mac);
+                    if (node.is_online) {
+                        html += collapsed ? renderOnlineRowCollapsed(node, checkboxHtml) : renderOnlineRow(node, checkboxHtml);
+                    } else {
+                        html += collapsed ? renderOfflineRowCollapsed(node, checkboxHtml) : renderOfflineRow(node, checkboxHtml);
+                    }
                 } catch (rowErr) {
                     console.error('Row render error for', node.mac, rowErr);
                 }
