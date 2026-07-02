@@ -123,10 +123,8 @@ def digest_node_state(
         if local_exp_id == "system" or active_job.get("name") == "System Diagnostic":
             primary_state = "DIAGNOSING"
             is_diagnosing = True
-        elif active_job.get("status") == "RUNNING":
+        elif active_job.get("status") in ["RUNNING", "SCHEDULED"]:
             primary_state = "RUNNING"
-        elif active_job.get("status") == "SCHEDULED":
-            primary_state = "WAITING"
         elif active_job.get("status") == "ERROR":
             primary_state = "ERROR"
             has_warnings = True
@@ -196,7 +194,7 @@ def digest_node_state(
         "progress_pct": progress_pct,
         "taken": taken,
         "expected": expected,
-        "last_pic_time": last_pic[11:19] if last_pic != "Never" else "Never",
+        "last_pic_time": last_pic if last_pic != "Never" else "Never",
         "next_pic_time": next_pic[11:19] if next_pic != "None" else "None",
         "uptime": raw.get("uptime", "Unknown"),
         "sync_status": sync_status,

@@ -33,6 +33,10 @@
     // GLOBAL STATE: Shared across all components
     let selectedMacs = new Set();
     let currentView = 'ALL';
+    let currentSortKey = 'MODULE_ID';
+    let currentSortDirection = 'ASC';
+    let currentDescriptionQuery = '';
+    let descriptionSearchDebounce = null;
 </script>
 
 <div class="container-fluid py-4 px-4">

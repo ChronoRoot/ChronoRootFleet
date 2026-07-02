@@ -113,6 +113,69 @@
         fetchFleetData(); 
     }
 
+    function normalizeSortText(value) {
+        return (value || '').toString().trim().toLowerCase();
+    }
+
+    function tokenizeNaturalKey(value) {
+        return normalizeSortText(value).match(/\d+|\D+/g) || [];
+    }
+
+    function compareNatural(aValue, bValue) {
+        const aParts = tokenizeNaturalKey(aValue);
+        const bParts = tokenizeNaturalKey(bValue);
+        const maxLen = Math.max(aParts.length, bParts.length);
+
+        for (let i = 0; i < maxLen; i++) {
+            const aPart = aParts[i];
+            const bPart = bParts[i];
+
+            if (aPart === undefined) return -1;
+            if (bPart === undefined) return 1;
+
+            const aNum = /^\d+$/.test(aPart);
+            const bNum = /^\d+$/.test(bPart);
+
+            if (aNum && bNum) {
+                const aN = Number(aPart);
+                const bN = Number(bPart);
+                if (aN < bN) return -1;
+                if (aN > bN) return 1;
+                continue;
+            }
+
+            if (aPart < bPart) return -1;
+            if (aPart > bPart) return 1;
+        }
+        return 0;
+    }
+
+    function sortFleetNodes(nodes) {
+        const dir = currentSortDirection === 'DESC' ? -1 : 1;
+        const sortedNodes = [...nodes];
+        sortedNodes.sort((a, b) => {
+            let aKey = '';
+            let bKey = '';
+
+            if (currentSortKey === 'LOCATION') {
+                aKey = normalizeSortText(a.description);
+                bKey = normalizeSortText(b.description);
+            } else {
+                aKey = normalizeSortText(a.hostname);
+                bKey = normalizeSortText(b.hostname);
+            }
+
+            if (aKey === bKey) {
+                const aFallback = normalizeSortText(a.mac);
+                const bFallback = normalizeSortText(b.mac);
+                return compareNatural(aFallback, bFallback) * dir;
+            }
+
+            return compareNatural(aKey, bKey) * dir;
+        });
+        return sortedNodes;
+    }
+
     let fleetPollTimer = null;
     let fleetPollIntervalMs = 5000;
 
@@ -326,11 +389,14 @@
                 `;
             }
 
-            let counts = { 'ALL': 0, 'RUNNING': 0, 'WAITING': 0, 'IDLE': 0, 'OFFLINE': 0, 'ATTENTION': 0 };
+            let counts = { 'ALL': 0, 'RUNNING': 0, 'IDLE': 0, 'OFFLINE': 0, 'ATTENTION': 0 };
             let html = '';
 
             let hideToggle = document.getElementById('hideOfflineToggle');
             let hideOffline = hideToggle ? hideToggle.checked : false;
+            const searchQuery = normalizeSortText(currentDescriptionQuery);
+
+            nodesList = sortFleetNodes(nodesList);
 
             nodesList.forEach(node => {
                 try {
@@ -341,6 +407,11 @@
                     if (hideOffline && !node.is_online) return;
                     if (currentView === 'ATTENTION' && !node.needs_attention) return;
                     if (currentView !== 'ALL' && currentView !== 'ATTENTION' && currentView !== node.primary_state) return;
+                    if (searchQuery) {
+                        const nodeName = normalizeSortText(node.hostname);
+                        const nodeDesc = normalizeSortText(node.description);
+                        if (!nodeName.includes(searchQuery) && !nodeDesc.includes(searchQuery)) return;
+                    }
 
                     const isChecked = selectedMacs.has(node.mac) ? 'checked' : '';
                     const checkboxHtml = node.is_online
