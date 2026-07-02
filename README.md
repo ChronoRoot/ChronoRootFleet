@@ -1,191 +1,194 @@
-# ChronoRoot Fleet Controller
+# ChronoRoot Fleet Commander
 
-The Master Controller for the ChronoRoot automated plant phenotyping network. This application provides a centralized, asynchronous orchestration layer to monitor hardware health, manage network configurations, and deploy synchronized biological imaging batches across a distributed fleet of Raspberry Pi edge nodes.
+Central orchestration hub for the [ChronoRoot](https://chronoroot.github.io/) automated plant phenotyping network. The Fleet Commander monitors hardware health, manages network configurations, launches synchronized imaging batches, and provides secure remote access to edge modules across a distributed fleet of Raspberry Pi nodes.
 
-## 🚀 Core Features
+**Controller Repository:** [github.com/ChronoRoot/ChronoRootFleet](https://github.com/ChronoRoot/ChronoRootControl)
 
-* **Passive Aggregation Architecture:** The Master relies on a non-blocking "Pull" architecture. Edge nodes operate entirely autonomously; the Master merely observes, orchestrates, and logs their progress.
-* **Zero-Touch Discovery:** Background sweepers continuously scan the subnet (`10.42.0.x`) to automatically discover, register, and configure newly connected modules without manual IP entry.
-* **Zero-Touch Reverse Proxy:** Seamlessly access the native web interface of any individual edge node directly through the Master dashboard. A custom FastAPI middleware intercepts and tunnels all traffic, ensuring strict network isolation without requiring any code changes on the edge modules.
-* **Global Batch Orchestration:** Launch synchronized time-lapse experiments. The system runs strict pre-flight checks to prevent jobs from starting on nodes with insufficient storage, overlapping schedules, or hardware faults.
-* **Autonomous Time Synchronization:** Detects clock drift on offline/non-NTP edge nodes and pushes the master time to ensure perfect chronological alignment of phenotyping data.
-* **Bulk Fleet Management:** Push SFTP/FTP/Rclone configurations, trigger background network transfers, or send mass-reboot commands to selected module batches.
+## Core Features
 
-## 🛠️ Technology Stack
+* **Passive aggregation architecture:** Edge nodes run autonomously. The commander observes, orchestrates, and logs progress via a non-blocking pull model — modules keep imaging even if the commander goes offline.
+* **Fast monitor loop:** Known modules are polled on a configurable interval (15–30s) with concurrent async HTTP, grace-period presence tracking, and stale/offline UI states.
+* **On-demand discovery:** A full subnet sweep (`.1`–`.254`) registers new modules and backfills experiment history. Trigger via the **Discover** button or `POST /api/fleet/discover`.
+* **Zero-touch reverse proxy:** Access any edge node's native web UI through the dashboard. FastAPI middleware tunnels traffic (including static assets and video streams) without modifying edge software.
+* **Global batch orchestration:** Launch synchronized time-lapse experiments with strict pre-flight checks for storage, camera availability, and schedule conflicts.
+* **Autonomous time synchronization:** Detects clock drift on manual-time nodes and pushes master time to align phenotyping timestamps.
+* **Bulk fleet management:** Push SFTP/FTP/Rclone configs, trigger background transfers, run diagnostics, or send mass reboot commands to selected modules.
 
-| Component | Technology | Description |
+## Technology Stack
+
+| Component | Technology | Role |
 | :--- | :--- | :--- |
-| **Backend Framework** | FastAPI (Python 3.10+) | High-performance async web framework capable of sweeping 250+ IPs in seconds. |
-| **Database Tracking** | SQLModel / SQLite | Highly relational tracking of Batches, Hardware Nodes, and Module Runs. |
-| **Network Client** | HTTPX | Asynchronous HTTP client for non-blocking edge device communication. |
-| **Frontend UI** | Jinja2 + Bootstrap 5 | Server-Side Rendered templates with vanilla JS polling for accessible maintenance. |
+| Backend | FastAPI (Python 3.10+) | Async web framework and API layer |
+| Database | SQLModel / SQLite | Persistent tracking of modules, batches, and runs |
+| HTTP client | HTTPX | Non-blocking communication with edge nodes |
+| Frontend | Jinja2 + Bootstrap 5 | Server-rendered dashboards with vanilla JS polling |
 
-## ⚙️ Installation & Setup
+## Architecture
 
-The Fleet Controller can be deployed in two ways: via Docker (recommended for PCs/Servers) or directly on bare-metal hardware (recommended if using a Raspberry Pi as the Master Router).
-
-### Option 1: Docker Deployment (PCs / Servers)
-
-1. Clone the repository to your Master Node:
-```bash
-git clone [https://github.com/your-org/ChronoRoot-FleetControl.git](https://github.com/your-org/ChronoRoot-FleetControl.git)
-cd ChronoRoot-FleetControl
-
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    Fleet Commander (Master)                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐ │
+│  │ Fast Monitor │  │   Discovery  │  │  Reverse Proxy     │ │
+│  │ Loop (poll)  │  │  (on demand) │  │  /proxy/{mac}/…    │ │
+│  └──────┬───────┘  └──────┬───────┘  └─────────┬──────────┘ │
+│         │                 │                     │           │
+│  ┌──────┴─────────────────┴─────────────────────┴──────────┐│
+│  │  In-memory presence (LIVE_FLEET_STATE) + SQLite DB      ││
+│  └─────────────────────────────────────────────────────────┘│
+└────────────────────────────┬────────────────────────────────┘
+                             │ HTTP (isolated subnet)
+         ┌───────────────────┼───────────────────┐
+         ▼                   ▼                   ▼
+   ┌───────────┐       ┌───────────┐       ┌───────────┐
+   │  Module   │       │  Module   │       │  Module   │
+   │  (Pi)     │       │  (Pi)     │       │  (Pi)     │
+   └───────────┘       └───────────┘       └───────────┘
 ```
 
-2. Start the Fleet Master via Docker Compose:
+**Presence state machine:** A module stays *fresh* while polls succeed. After consecutive misses it becomes *stale* (yellow UI), then *offline* (evicted from live state). Poll health is exposed at `GET /api/fleet/diagnostics`.
+
+## Installation
+
+The Fleet Commander can run in Docker (recommended for PCs/servers) or directly on bare metal (recommended when the master is a Raspberry Pi on the lab subnet).
+
+### Option 1: Docker (PC / Server)
 
 ```bash
-docker-compose up -d --build
-
+git clone https://github.com/ChronoRoot/ChronoRootFleet.git
+cd ChronoRootFleet
+docker compose up -d --build
 ```
 
-3. Open your browser and navigate to `http://localhost:8000` (or the IP address of your Master Node).
+Open `http://localhost:8000` (or the host machine's IP). Docker uses `network_mode: host` so the commander can reach edge nodes on the local subnet.
 
----
+The SQLite database is stored in the `chronoroot_fleet_data` Docker volume at `/data/fleet_data.db`.
 
-### Option 2: Raspberry Pi Deployment
+### Option 2: Raspberry Pi (Bare Metal)
 
-Running without Docker is highly recommended for low-resource devices like the Raspberry Pi. This method sets up the application as a background `systemd` service behind an `NGINX` reverse proxy.
+Running without Docker is recommended on low-resource devices. The setup script installs dependencies, creates a `systemd` service, and configures NGINX as a reverse proxy.
 
-#### Automated Installation (Easiest)
-
-We provide an automated setup script that handles all system dependencies, service creation, and NGINX routing.
+**Important:** The systemd unit expects the project at `/srv/ChronoRootFleet`. Clone there, or edit `WorkingDirectory` in the generated service file.
 
 ```bash
-git clone [https://github.com/your-org/ChronoRoot-FleetControl.git](https://github.com/your-org/ChronoRoot-FleetControl.git)
-cd ChronoRoot-FleetControl
+sudo mkdir -p /srv
+sudo git clone https://github.com/ChronoRoot/ChronoRootFleet.git /srv/ChronoRootFleet
+cd /srv/ChronoRootFleet
 chmod +x setup.sh
 ./setup.sh
-
 ```
 
-#### Manual Installation (Copy & Paste)
+Access the dashboard at `http://<pi-ip>/`.
 
-If you prefer to set up the system manually, copy and paste the following blocks into your terminal.
-
-**1. Install Dependencies & Setup Virtual Environment:**
+#### Manual bare-metal install
 
 ```bash
 sudo apt update && sudo apt install -y nginx python3-pip python3-venv sqlite3 git
-git clone [https://github.com/ChronoRoot/ChronoRoot-FleetControl.git](https://github.com/ChronoRoot/ChronoRoot-FleetControl.git)
-cd ChronoRoot-FleetControl
+sudo git clone https://github.com/ChronoRoot/ChronoRootFleet.git /srv/ChronoRootFleet
+cd /srv/ChronoRootFleet
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
 ```
 
-**2. Create the Systemd Background Service:**
+Create `/etc/systemd/system/fleetcontrol.service` pointing `WorkingDirectory` and `ExecStart` at `/srv/ChronoRootFleet`, then configure NGINX to proxy port 80 → `127.0.0.1:8000`. See `setup.sh` for reference templates.
 
-```bash
-cat << EOF | sudo tee /etc/systemd/system/fleetcontrol.service
-[Unit]
-Description=ChronoRoot Fleet Controller (Uvicorn)
-After=network.target
+## Usage
 
-[Service]
-User=$USER
-Group=www-data
-WorkingDirectory=/srv/FleetControl
-Environment="PATH=/srv/FleetControl/venv/bin"
+### Fleet operations (triage)
 
-ExecStart=/srv/FleetControl/venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+The home page lists all registered modules. Storage warnings, camera faults, and connectivity issues are surfaced automatically. Use bulk actions to sync time, push configs, or reboot selected nodes.
 
-Restart=always
-RestartSec=5
+### Discovering new modules
 
-[Install]
-WantedBy=multi-user.target
-EOF
+New hardware is not auto-registered by the fast monitor alone — it only polls modules already in the database. After connecting modules to the subnet, click **Discover** (or call `POST /api/fleet/discover`) to scan the subnet and register them.
 
-sudo systemctl daemon-reload
-sudo systemctl enable fleetcontrol --now
+### Launching a batch experiment
 
-```
+Select modules, click **Launch Global Batch**, and define timeline, interval, and lighting. Pre-flight validation checks offline nodes, camera availability, storage, and schedule conflicts before dispatch.
 
-**3. Configure NGINX:**
+### Experiment history
 
-```bash
-cat << 'EOF' | sudo tee /etc/nginx/sites-available/fleetcontrol
-server {
-    listen 80;
-    server_name _;
-    client_max_body_size 50M;
+The **Experiment Status** tab tracks batch progress. Use **Sync Archive History** to pull final picture counts from edge nodes after a run.
 
-    location / {
-        proxy_pass [http://127.0.0.1:8000](http://127.0.0.1:8000);
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 300;
-        proxy_connect_timeout 300;
-    }
-}
-EOF
+### Remote module access
 
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo ln -sf /etc/nginx/sites-available/fleetcontrol /etc/nginx/sites-enabled/
-sudo systemctl restart nginx
+Click **Remote View** on any online module to tunnel into its native UI through the commander proxy.
 
-```
+## API Overview
 
-## 📁 Project Structure
+| Endpoint | Description |
+| :--- | :--- |
+| `GET /api/fleet/live-digested` | Digested fleet state for the dashboard |
+| `GET /api/fleet/diagnostics` | Poll monitor health and error breakdown |
+| `POST /api/fleet/discover` | Full subnet discovery sweep |
+| `POST /api/fleet/experiment/launch` | Launch a global batch experiment |
+| `POST /api/fleet/bulk/*` | Bulk reboot, diagnostic, config, sync, time |
+| `GET /api/fleet/db/experiments` | Historical batch data |
+| `GET /proxy/{mac}/{path}` | Reverse proxy to edge node UI |
 
-```text
-FleetControl/
-├── app/
-│   ├── core/                 # Shared in-memory state and background monitoring loops
-│   ├── doc/                  # System Architecture and About markdown files
-│   ├── data/                 # Directory for the persistent SQLite DB
-│   ├── routers/              # API endpoints for fleet orchestration and single-node control
-│   ├── templates/            # HTML/JS Frontend UI dashboards
-│   ├── database.py           # SQLModel schema definitions (ExperimentBatch, ModuleRun)
-│   └── main.py               # FastAPI application factory & lifespan events
-├── setup.sh                  # Automated bare-metal installer script
-├── docker-compose.yml
-├── Dockerfile
-└── requirements.txt
+Full interactive docs are available at `/docs` when the server is running.
 
-```
-
-## 🖥️ Usage Guide
-
-### 1. Fleet Operations (Triage)
-
-Navigate to the home page to view the All Modules table. The system evaluates the health of the entire network. Modules with storage warnings, disconnected cameras, or system faults are automatically flagged. Use the Bulk Action bar to send mass network sync commands or reboots.
-
-### 2. Launching a Biological Batch
-
-Select your target modules from the All Modules table and click **Launch Global Batch**. Define your parameters (Timeline, Interval, Lighting). The Master will automatically run a Pre-Flight validation check against all selected nodes before dispatching the payload.
-
-### 3. Reviewing Historical Data
-
-Navigate to the **Experiment Status** tab. This view tracks the global progress of active batches. If a module dropped offline during a run, click **Sync Archive History** to force the Master to connect to the node and pull the true, final picture counts directly from the edge node's local disk.
-
-### 4. Remote Module Access
-
-Need to physically calibrate a camera's focus wheel or check local system logs? Click **Remote View** on any active node in the Fleet Operations table. The Master Controller will securely tunnel into the node, allowing you to interact with its native interface without ever leaving the Fleet Commander.
-
-## Tuning (environment variables)
+## Configuration (environment variables)
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `FLEET_MAX_CONCURRENT_POLLS` | `12` | Max parallel status polls (fast monitor) |
-| `FLEET_CONNECT_TIMEOUT` | `3` | Seconds to establish TCP to a module |
-| `FLEET_READ_TIMEOUT` | `15` | Seconds to wait for `/api/status` response body |
+| `FLEET_TARGET_SUBNET` | `192.168.1` | Subnet base for manual discovery (e.g. `10.42.0`) |
+| `FLEET_MAX_CONCURRENT_POLLS` | `12` | Max parallel status polls per cycle |
+| `FLEET_CONNECT_TIMEOUT` | `3` | TCP connect timeout (seconds) |
+| `FLEET_READ_TIMEOUT` | `15` | `/api/status` read timeout (seconds) |
 | `FLEET_MAX_FETCH_RETRIES` | `1` | Retries per module per poll cycle |
-| `FLEET_FAST_POLL_INTERVAL` | `15` | Minimum seconds between poll cycle starts (small fleet) |
-| `FLEET_FAST_POLL_INTERVAL_LARGE` | `30` | Minimum seconds between poll cycle starts (10+ modules) |
-| `FLEET_STALE_AFTER_MISSES` | `2` | Consecutive missed cycles before yellow (stale) UI |
-| `FLEET_OFFLINE_GRACE_POLLS` | `4` | Consecutive missed cycles before marking a module offline |
+| `FLEET_FAST_POLL_INTERVAL` | `15` | Seconds between poll cycles (small fleet) |
+| `FLEET_FAST_POLL_INTERVAL_LARGE` | `30` | Seconds between poll cycles (10+ modules) |
+| `FLEET_LARGE_FLEET_THRESHOLD` | `10` | Module count threshold for large-fleet interval |
+| `FLEET_STALE_AFTER_MISSES` | `2` | Consecutive misses before stale (yellow) UI |
+| `FLEET_OFFLINE_GRACE_POLLS` | `4` | Consecutive misses before marking offline |
 | `FLEET_POLL_TASK_STAGGER` | `0` | Delay between launching each poll task |
-| `FLEET_USE_LIVENESS_PROBE` | off | Short `/api/status` probe before full fetch (set `true` to enable) |
-| `FLEET_DISCOVERY_MAX_CONCURRENT` | `32` | Max parallel requests during manual Discover sweep |
-| `FLEET_TARGET_SUBNET` | `192.168.1` | Subnet base for manual Discover sweep |
-
-Poll health is exposed at `GET /api/fleet/diagnostics`. Check `modules_responded` vs `modules_polled`, `last_cycle_duration_seconds`, and the `errors` breakdown (`ReadTimeout`, `PoolTimeout`, `ConnectError`) when modules flap yellow or offline.
+| `FLEET_USE_LIVENESS_PROBE` | off | Short `/api/status` probe before full fetch |
+| `FLEET_DISCOVERY_MAX_CONCURRENT` | `32` | Max parallel requests during discovery |
+| `FLEET_PROXY_DB_FALLBACK_MINUTES` | `5` | Use last-known IP for proxy when offline |
 
 Legacy: `FLEET_POLL_BATCH_SIZE` is an alias for `FLEET_MAX_CONCURRENT_POLLS` if the latter is unset.
+
+When modules flap yellow or offline, check `GET /api/fleet/diagnostics` for `modules_responded` vs `modules_polled`, `last_cycle_duration_seconds`, and the `errors` breakdown (`ReadTimeout`, `PoolTimeout`, `ConnectError`).
+
+## Project Structure
+
+```text
+ChronoRootFleet/
+├── app/
+│   ├── core/                 # In-memory state, poll sweeper, UI transformers
+│   ├── doc/                  # Architecture and about markdown (rendered in /about)
+│   ├── routers/              # API routes, views, reverse proxy
+│   ├── templates/            # Jinja2 dashboards and components
+│   ├── database.py           # SQLModel schema (RobotModule, ExperimentalBatch, ExperimentRun)
+│   └── main.py               # FastAPI app, lifespan, proxy middleware
+├── setup.sh                  # Bare-metal installer (systemd + NGINX)
+├── docker-compose.yml
+├── Dockerfile
+└── requirements.txt
+```
+
+## Security Notice
+
+The Fleet Commander is designed for **isolated lab networks**. It has no built-in authentication — all dashboard and API endpoints are open to anyone who can reach the host. Deploy only on trusted subnets; do not expose port 80/8000 to the public internet without adding a reverse proxy with authentication.
+
+Edge communication uses plain HTTP. Credentials for SFTP/FTP sync are forwarded to modules in request bodies.
+
+## Related Projects
+
+| Project | Description |
+| :--- | :--- |
+| [ChronoRootFleet](https://github.com/ChronoRoot/ChronoRootFleet) | This repository — fleet orchestration |
+| [ChronoRootControl](https://github.com/ChronoRoot/ChronoRootControl) | Single-module edge controller |
+| [ChronoRoot2](https://github.com/ChronoRoot/ChronoRoot2) | Image analysis pipeline |
+
+## License
+
+Dual-licensed under **CeCILL v2.1** or **GNU GPL v3**. See [LICENSE](LICENSE) and [LICENSE_FR](LICENSE_FR).
+
+## Citation
+
+If you use ChronoRoot in your research, please cite:
+
+> Gaggion, N., Boccardo, N.A., Bonazzola, R., et al. *ChronoRoot 2.0: an open AI-powered platform for 2D temporal plant phenotyping.* GigaScience, 15, giag018 (2026). [doi:10.1093/gigascience/giag018](https://doi.org/10.1093/gigascience/giag018)

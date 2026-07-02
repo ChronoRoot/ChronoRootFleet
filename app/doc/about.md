@@ -28,7 +28,7 @@ Built on a robust, asynchronous "Passive Aggregation" architecture, the Master C
 
 * [IPS2 Website](http://ips2.u-psud.fr)
 * [ChronoRoot Main Website](https://chronoroot.github.io/)
-* [ChronoRoot Fleet Controller Source Code](https://github.com/ChronoRoot/FleetControl)
+* [ChronoRoot Fleet Commander Source Code](https://github.com/ChronoRoot/ChronoRootFleet)
 * [ChronoRoot Module Controller Source Code](https://github.com/ChronoRoot/ChronoRootControl)
 * [ChronoRoot Image Analysis Pipeline](https://github.com/ChronoRoot/ChronoRoot2)
 

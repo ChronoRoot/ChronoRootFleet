@@ -30,14 +30,14 @@ CURRENT_USER=$(whoami)
 
 cat << EOF | sudo tee /etc/systemd/system/fleetcontrol.service > /dev/null
 [Unit]
-Description=ChronoRoot Fleet Controller (Uvicorn)
+Description=ChronoRoot Fleet Commander (Uvicorn)
 After=network.target
 
 [Service]
-User=$USER
+User=$CURRENT_USER
 Group=www-data
-WorkingDirectory=/srv/FleetControl
-Environment="PATH=/srv/FleetControl/venv/bin"
+WorkingDirectory=$CURRENT_DIR
+Environment="PATH=$CURRENT_DIR/venv/bin"
 Environment="FLEET_MAX_CONCURRENT_POLLS=12"
 Environment="FLEET_CONNECT_TIMEOUT=3"
 Environment="FLEET_READ_TIMEOUT=15"
@@ -46,7 +46,7 @@ Environment="FLEET_STALE_AFTER_MISSES=2"
 Environment="FLEET_OFFLINE_GRACE_POLLS=4"
 Environment="FLEET_FAST_POLL_INTERVAL_LARGE=30"
 
-ExecStart=/srv/FleetControl/venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+ExecStart=$CURRENT_DIR/venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 
 Restart=always
 RestartSec=5

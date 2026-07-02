@@ -10,7 +10,7 @@ To achieve this, the Fleet Controller relies heavily on a "Pull" discovery archi
 
 ## 2. Network Topology and Device Discovery
 
-The system is designed to operate on a dedicated subnetwork (defaulting to `10.42.0.x`), physically isolated from enterprise networks to bypass strict firewall policies.
+The system is designed to operate on a dedicated subnetwork (configurable via `FLEET_TARGET_SUBNET`, default `192.168.1`; ChronoRoot lab deployments often use `10.42.0.x`), physically isolated from enterprise networks to bypass strict firewall policies.
 
 Because we require **Zero-Touch Module Integration**, individual modules do not broadcast to the Master, nor do they require any custom software modifications to communicate with it. The Master handles network interactions through two distinct engines:
 
@@ -26,7 +26,7 @@ The database is strictly relational, segregating the physical hardware from the 
 
 * **`RobotModule` (The Hardware Table):** Tracks physical devices via their absolute MAC Address. Ensures historical data is always tied to the correct physical robot regardless of IP changes. It also maintains custom human-readable aliases and physical location descriptions (e.g., "Growth Chamber B, Top Shelf") to help technicians map digital nodes to physical hardware.
 * **`ExperimentBatch` (The Global Science Table):** Acts as the master record for the scientific parameters (Interval, Lighting, Launch Time) when a global experiment is initiated.
-* **`ModuleRun` (The Relational Bridge):** Tracks exactly how an individual piece of hardware performed during a global batch launch, recording expected yields versus actual taken frames to flag dropped timelines.
+* **`ExperimentRun` (The Relational Bridge):** Tracks exactly how an individual piece of hardware performed during a global batch launch, recording expected yields versus actual taken frames to flag dropped timelines.
 
 ## 4. Standard Operating Procedure (SOP)
 
