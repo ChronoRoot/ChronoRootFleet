@@ -50,7 +50,7 @@ Central orchestration hub for the [ChronoRoot](https://chronoroot.github.io/) au
 
 ## Installation
 
-The Fleet Commander can run in Docker (recommended for PCs/servers) or directly on bare metal (recommended when the master is a Raspberry Pi on the lab subnet).
+The Fleet Commander can run in Docker (recommended for PCs/servers) or directly on a Raspberry Pi.
 
 ### Option 1: Docker (PC / Server)
 
@@ -64,7 +64,7 @@ Open `http://localhost:8000` (or the host machine's IP). Docker uses `network_mo
 
 The SQLite database is stored in the `chronoroot_fleet_data` Docker volume at `/data/fleet_data.db`.
 
-### Option 2: Raspberry Pi (Bare Metal)
+### Option 2: Raspberry Pi
 
 Running without Docker is recommended on low-resource devices. The setup script installs dependencies, creates a `systemd` service, and configures NGINX as a reverse proxy.
 
