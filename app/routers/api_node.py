@@ -5,8 +5,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from sqlmodel import Session
 from app.database import engine, RobotModule
-from app.core.state import LIVE_FLEET_STATE
-from app.core.transformers import digest_node_state 
+from app.core.state import LIVE_FLEET_STATE, get_telemetry_meta, normalize_mac
+from app.core.transformers import digest_node_state
 
 router = APIRouter(prefix="/api/node", tags=["Node Control"])
 
@@ -36,13 +36,14 @@ def get_node_ip(mac: str) -> str:
 @router.get("/{mac}/dashboard-state")
 async def get_digested_node_state(mac: str):
     master_time_obj = datetime.now()
-    raw = LIVE_FLEET_STATE.get(mac, {})
-    
+    norm_mac = normalize_mac(mac)
+    raw = LIVE_FLEET_STATE.get(norm_mac, LIVE_FLEET_STATE.get(mac, {}))
+    telemetry_meta = get_telemetry_meta(norm_mac)
+
     with Session(engine) as session:
         db_mod = session.get(RobotModule, mac)
-        
-    # Pass the data through our single source of truth
-    return digest_node_state(mac, raw, db_mod, master_time_obj)
+
+    return digest_node_state(mac, raw, db_mod, master_time_obj, telemetry_meta)
 
 @router.put("/{mac}/config")
 async def update_node_config(mac: str, config_data: ConfigUpdateRequest):

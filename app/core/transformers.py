@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Literal
 from app.database import RobotModule
+
+HealthClass = Literal["ok", "untested", "failed"]
 
 
 def _first_present_value(source: Dict[str, Any], keys: list[str]) -> Optional[str]:
@@ -9,6 +11,123 @@ def _first_present_value(source: Dict[str, Any], keys: list[str]) -> Optional[st
         if value not in (None, "", "Unknown", "None"):
             return value
     return None
+
+
+def _dedupe_issues(issues: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for issue in issues:
+        if issue not in seen:
+            seen.add(issue)
+            result.append(issue)
+    return result
+
+
+def classify_health(status: Optional[str]) -> HealthClass:
+    if status == "OK":
+        return "ok"
+    if status == "UNTESTED":
+        return "untested"
+    return "failed"
+
+
+def summarize_cameras(cam_reports: Dict[str, Any]) -> Dict[str, Any]:
+    cams_ok = 0
+    cams_untested = 0
+    cams_failed = 0
+    camera_issues: list[str] = []
+    cameras_by_id: Dict[str, Dict[str, Any]] = {}
+
+    for cam_id, cam in cam_reports.items():
+        health = cam.get("health", "UNKNOWN")
+        activity = cam.get("activity", "IDLE")
+        last_check = cam.get("last_check", "N/A")
+        cameras_by_id[str(cam_id)] = {
+            "health": health,
+            "activity": activity,
+            "last_check": last_check,
+        }
+
+        if health == "OK":
+            cams_ok += 1
+        elif health == "UNTESTED":
+            cams_untested += 1
+            camera_issues.append(f"Camera {cam_id}: UNTESTED")
+        else:
+            cams_failed += 1
+            camera_issues.append(f"Camera {cam_id}: {health}")
+
+    cams_total = len(cam_reports)
+    cameras_attention = cams_ok < cams_total
+
+    return {
+        "cams_ok": cams_ok,
+        "cams_total": cams_total,
+        "cams_untested": cams_untested,
+        "cams_failed": cams_failed,
+        "cameras_attention": cameras_attention,
+        "camera_issues": camera_issues,
+        "cameras_by_id": cameras_by_id,
+    }
+
+
+def summarize_lights(lights_info: Dict[str, Any]) -> Dict[str, Any]:
+    health_check = lights_info.get("health_check", {})
+    lights_health = health_check.get("status", "UNKNOWN")
+    lights_state = lights_info.get("state", "UNKNOWN")
+    return {
+        "lights_health": lights_health,
+        "lights_state": lights_state,
+        "lights_attention": lights_health != "OK",
+    }
+
+
+def summarize_live_job(
+    active_job: Dict[str, Any],
+    local_exp_id: str,
+    cam_reports: Dict[str, Any],
+    camera_gaps: list,
+    all_cameras_failed: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    progress = active_job.get("progress", {})
+    last_capture = active_job.get("last_capture", {})
+
+    experiment_gaps = [
+        {"cam": gap.get("cam"), "behind_by": gap.get("behind_by")}
+        for gap in camera_gaps
+        if gap.get("expid") == local_exp_id
+    ]
+
+    per_camera_status = [
+        {
+            "id": str(cam_id),
+            "health": cam.get("health", "UNKNOWN"),
+            "activity": cam.get("activity", "IDLE"),
+        }
+        for cam_id, cam in sorted(cam_reports.items(), key=lambda item: int(item[0]))
+    ]
+
+    job_status = active_job.get("status", "")
+    has_health_mismatch = any(cam.get("health") != "OK" for cam in cam_reports.values())
+    has_camera_mismatch = bool(experiment_gaps) or (
+        job_status == "RUNNING" and has_health_mismatch
+    )
+
+    job_all_failed = None
+    if all_cameras_failed and all_cameras_failed.get("expid") == local_exp_id:
+        job_all_failed = all_cameras_failed
+
+    return {
+        "last_capture_time": last_capture.get("time"),
+        "last_capture_result": last_capture.get("result"),
+        "rounds_taken": int(progress.get("taken", 0)),
+        "rounds_expected": int(progress.get("expected", 0)),
+        "rounds_expected_so_far": int(progress.get("expected_so_far", 0)),
+        "experiment_gaps": experiment_gaps,
+        "has_camera_mismatch": has_camera_mismatch,
+        "per_camera_status": per_camera_status,
+        "all_cameras_failed": job_all_failed,
+    }
 
 
 def compute_clock_drift_seconds(
@@ -61,6 +180,18 @@ def digest_node_state(
         "last_telemetry_at": None,
     }
 
+    empty_job_detail: Dict[str, Any] = {
+        "last_capture_time": None,
+        "last_capture_result": None,
+        "rounds_taken": 0,
+        "rounds_expected": 0,
+        "rounds_expected_so_far": 0,
+        "experiment_gaps": [],
+        "has_camera_mismatch": False,
+        "per_camera_status": [],
+        "all_cameras_failed": None,
+    }
+
     if not is_online:
         return {
             "mac": mac,
@@ -76,9 +207,18 @@ def digest_node_state(
             "hardware_desc": hardware_desc,
             "last_seen": db_mod.last_seen.strftime("%Y-%m-%d %H:%M:%S") if db_mod and db_mod.last_seen else "Unknown",
             "storage_pct": 0,
-            "ir_status": "UNKNOWN",
+            "lights_health": "UNKNOWN",
+            "lights_state": "UNKNOWN",
             "cams_ok": 0,
             "cams_total": 0,
+            "cams_untested": 0,
+            "cams_failed": 0,
+            "cameras_by_id": {},
+            "camera_gaps": [],
+            "all_cameras_failed": None,
+            "last_diagnostic": None,
+            "watchdog_limit_reached": False,
+            "job_detail": empty_job_detail,
             "time_sync_status": "Offline",
             "time_mode": time_mode,
             "drift_seconds": "N/A",
@@ -97,6 +237,26 @@ def digest_node_state(
             **stale_fields,
         }
 
+    cam_reports = raw.get("cam_reports", {})
+    camera_summary = summarize_cameras(cam_reports)
+    lights_summary = summarize_lights(raw.get("lights_info", {}))
+    lights_health = lights_summary["lights_health"]
+    lights_state = lights_summary["lights_state"]
+
+    camera_gaps = raw.get("camera_gaps", [])
+    all_cameras_failed_raw = raw.get("all_cameras_failed")
+    last_diagnostic_raw = raw.get("last_diagnostic") or {}
+    last_diagnostic = (
+        {
+            "time": last_diagnostic_raw.get("time"),
+            "global_result": last_diagnostic_raw.get("global_result"),
+            "message": last_diagnostic_raw.get("message"),
+        }
+        if last_diagnostic_raw
+        else None
+    )
+    watchdog_limit_reached = raw.get("watchdog", {}).get("limit_reached", False)
+
     alerts = raw.get("alerts", {})
     issues = list(alerts.get("issues", []))
     has_warnings = alerts.get("has_warnings", False)
@@ -105,11 +265,6 @@ def digest_node_state(
     if storage_pct > 85.0:
         has_warnings = True
         issues.append(f"Storage {storage_pct}%")
-
-    ir_status = raw.get("lights_info", {}).get("health_check", {}).get("status", "UNKNOWN")
-    if ir_status == "NOT DETECTED":
-        has_warnings = True
-        issues.append("IR Failure")
 
     active_job = None
     local_exp_id = None
@@ -138,11 +293,31 @@ def digest_node_state(
             has_warnings = True
             issues.append("Experiment Error")
 
+    if not is_diagnosing:
+        if camera_summary["cameras_attention"]:
+            has_warnings = True
+            issues.extend(camera_summary["camera_issues"])
+        if lights_summary["lights_attention"]:
+            has_warnings = True
+            issues.append(f"Lights: {lights_health}")
+
+    issues = _dedupe_issues(issues)
+
     progress_pct = 0
     taken = int(active_job.get("progress", {}).get("taken", 0)) if active_job else 0
     expected = int(active_job.get("progress", {}).get("expected", 1)) if active_job else 1
     if expected > 0 and active_job:
         progress_pct = round((taken / expected) * 100)
+
+    job_detail = empty_job_detail
+    if active_job and not is_diagnosing:
+        job_detail = summarize_live_job(
+            active_job,
+            local_exp_id or "",
+            cam_reports,
+            camera_gaps,
+            all_cameras_failed_raw,
+        )
 
     last_pic = raw.get("last_picture") or "Never"
     next_pic = raw.get("next_picture") or "None"
@@ -193,9 +368,18 @@ def digest_node_state(
         "is_diagnosing": is_diagnosing,
         "issues": issues,
         "storage_pct": storage_pct,
-        "ir_status": ir_status,
-        "cams_ok": sum(1 for cam in raw.get("cam_reports", {}).values() if cam.get("health") == "OK"),
-        "cams_total": len(raw.get("cam_reports", {})),
+        "lights_health": lights_health,
+        "lights_state": lights_state,
+        "cams_ok": camera_summary["cams_ok"],
+        "cams_total": camera_summary["cams_total"],
+        "cams_untested": camera_summary["cams_untested"],
+        "cams_failed": camera_summary["cams_failed"],
+        "cameras_by_id": camera_summary["cameras_by_id"],
+        "camera_gaps": camera_gaps,
+        "all_cameras_failed": all_cameras_failed_raw,
+        "last_diagnostic": last_diagnostic,
+        "watchdog_limit_reached": watchdog_limit_reached,
+        "job_detail": job_detail,
         "hardware_desc": hardware_desc,
         "system_time": system_time_str,
         "time_sync_status": time_sync_status,
