@@ -232,6 +232,60 @@
         return `<div class="mt-1"><span class="badge bg-warning text-dark px-2 py-1"><i class="fas fa-hourglass-half"></i> ${label}</span></div>`;
     }
 
+    function parseFleetDateTime(value) {
+        if (!value || value === 'Unknown' || value === 'None') return null;
+        const raw = value.toString().trim();
+
+        const timeOnlyMatch = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+        if (timeOnlyMatch) {
+            const now = new Date();
+            const hour = Number(timeOnlyMatch[1]);
+            const minute = Number(timeOnlyMatch[2]);
+            const second = Number(timeOnlyMatch[3] || 0);
+            const dt = new Date(now);
+            dt.setHours(hour, minute, second, 0);
+            if (dt.getTime() < now.getTime()) {
+                dt.setDate(dt.getDate() + 1);
+            }
+            return dt;
+        }
+
+        const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+        const parsed = new Date(normalized);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    function formatFleetDateTime(value) {
+        const parsed = parseFleetDateTime(value);
+        if (!parsed) return 'Unknown';
+        return parsed.toLocaleString([], {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    }
+
+    function formatNextCaptureRelative(value) {
+        const parsed = parseFleetDateTime(value);
+        if (!parsed) return 'Unknown';
+        const diffMs = parsed.getTime() - Date.now();
+        if (diffMs <= 0) return 'now';
+
+        const totalMinutes = Math.ceil(diffMs / 60000);
+        if (totalMinutes < 1) return 'now';
+        if (totalMinutes < 60) return `in ${totalMinutes} min`;
+
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        if (hours < 24) return minutes > 0 ? `in ${hours}h ${minutes}m` : `in ${hours}h`;
+
+        const days = Math.floor(hours / 24);
+        const remHours = hours % 24;
+        return remHours > 0 ? `in ${days}d ${remHours}h` : `in ${days}d`;
+    }
+
     function renderCollapseToggleButton(mac, collapsed) {
         const icon = collapsed ? 'fa-expand-alt' : 'fa-compress-alt';
         const label = collapsed ? 'Expand' : 'Collapse';
@@ -352,6 +406,9 @@
             const statCol = node.job_status === 'ERROR' ? 'text-danger' : (node.job_status === 'SCHEDULED' ? 'text-warning' : 'text-primary');
             const barColor = node.job_status === 'ERROR' ? 'bg-danger' : (node.job_status === 'SCHEDULED' ? 'bg-warning' : 'bg-success progress-bar-striped progress-bar-animated');
             const progressText = node.job_status === 'SCHEDULED' ? 'Waiting to start...' : `${node.taken} of ${node.expected} images per camera`;
+            const startText = formatFleetDateTime(node.job_start);
+            const endText = formatFleetDateTime(node.job_end);
+            const nextCaptureText = formatNextCaptureRelative(node.next_pic_at || node.next_pic_time);
             jobHtml = `
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <strong class="${statCol} text-truncate" style="max-width: 180px;" title="${node.job_name}">${node.job_name || 'Untitled'}</strong>
@@ -364,8 +421,13 @@
                     <span class="font-weight-bold">${node.progress_pct}%</span>
                 </div>
                 <div class="mini-bar-container mb-2"><div class="mini-bar ${barColor}" style="width: ${node.progress_pct}%;"></div></div>
+                <div class="hw-detail text-muted mb-1">
+                    <i class="fas fa-calendar-alt"></i> Start: ${startText}
+                    <span class="mx-2">|</span>
+                    <i class="fas fa-flag-checkered"></i> End: ${endText}
+                </div>
                 <div class="hw-detail text-primary font-weight-bold bg-light border rounded px-2 py-1 d-inline-block mt-1">
-                    <i class="fas fa-clock"></i> Next Capture: ${node.next_pic_time}
+                    <i class="fas fa-clock"></i> Next Capture: ${nextCaptureText}
                 </div>`;
         }
 
@@ -456,9 +518,12 @@
         const statusLabel = node.is_diagnosing
             ? 'DIAGNOSING'
             : (node.job_status || 'IDLE');
-        const jobLabel = node.has_job
-            ? (node.job_name || 'Active job')
-            : 'System Idle';
+        const jobLabel = node.has_job ? (node.job_name || 'Active job') : 'System Idle';
+        const startText = formatFleetDateTime(node.job_start);
+        const endText = formatFleetDateTime(node.job_end);
+        const picturesLine = node.has_job
+            ? `${node.taken}/${node.expected} pictures.`
+            : 'No active experiment.';
 
         return `
             <tr class="row-hover${node.telemetry_stale ? ' table-warning' : ''}">
@@ -476,8 +541,11 @@
                 </td>
                 <td style="width: 20%;">
                     <div class="d-flex flex-column align-items-start gap-1">
-                        <span class="badge ${statusColor}">${statusLabel}</span>
-                        <span class="text-muted small text-truncate" title="${jobLabel}" style="max-width: 180px;">${jobLabel}</span>
+                        <div class="d-flex align-items-center gap-1">
+                            <span class="text-muted small text-truncate" title="${jobLabel}" style="max-width: 130px;">${jobLabel}</span>
+                            <span class="badge ${statusColor}">${statusLabel}</span>
+                        </div>
+                        <span class="text-muted small text-truncate" style="max-width: 260px;" title="${picturesLine}">${picturesLine}</span>
                     </div>
                 </td>
                 <td>

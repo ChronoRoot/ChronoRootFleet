@@ -3,6 +3,14 @@ from typing import Dict, Any, Optional
 from app.database import RobotModule
 
 
+def _first_present_value(source: Dict[str, Any], keys: list[str]) -> Optional[str]:
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, "", "Unknown", "None"):
+            return value
+    return None
+
+
 def compute_clock_drift_seconds(
     master_time: datetime,
     node_system_time_str: str,
@@ -164,6 +172,15 @@ def digest_node_state(
         "last_error": raw_sync.get("last_error", None),
     }
 
+    job_start = _first_present_value(
+        active_job or {},
+        ["start", "start_time", "started_at", "startAt", "from", "begin"],
+    )
+    job_end = _first_present_value(
+        active_job or {},
+        ["end", "end_time", "ended_at", "endAt", "to", "finish"],
+    )
+
     return {
         "mac": mac,
         "hostname": display_name,
@@ -190,11 +207,14 @@ def digest_node_state(
         "job_name": active_job.get("name") if active_job else None,
         "job_desc": active_job.get("desc") if active_job else None,
         "job_status": active_job.get("status") if active_job else None,
+        "job_start": job_start,
+        "job_end": job_end,
         "local_exp_id": local_exp_id,
         "progress_pct": progress_pct,
         "taken": taken,
         "expected": expected,
         "last_pic_time": last_pic if last_pic != "Never" else "Never",
+        "next_pic_at": next_pic if next_pic != "None" else "None",
         "next_pic_time": next_pic[11:19] if next_pic != "None" else "None",
         "uptime": raw.get("uptime", "Unknown"),
         "sync_status": sync_status,
