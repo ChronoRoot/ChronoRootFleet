@@ -24,7 +24,12 @@ from app.core.state import (
     discover_http_timeout,
     update_poll_diagnostics,
     HTTP_CLIENT,
+    begin_discovery,
+    update_discovery,
+    finish_discovery,
+    get_discovery_progress,
 )
+from app.core import state as fleet_state
 from app.database import engine, RobotModule, ExperimentRun, find_robot_module
 
 logger = logging.getLogger(__name__)
@@ -452,94 +457,137 @@ async def _bounded_fetch(
 # ENGINE 2: MANUAL DISCOVERY (full subnet sweep)
 # ==========================================
 
-async def execute_discovery_sweep():
+async def execute_discovery_sweep() -> Dict[str, Any]:
+    """
+    Full subnet sweep. Returns ``{count, subnet, duration_seconds, message}``.
+    Raises ``RuntimeError`` if a discovery is already running.
+    """
+    progress = get_discovery_progress()
+    if progress.get("running"):
+        raise RuntimeError("Discovery is already running. Please wait for it to finish.")
+
+    subnet = fleet_state.TARGET_SUBNET_BASE
     t0 = time.monotonic()
-    ips = [f"{TARGET_SUBNET_BASE}.{i}" for i in range(1, 255)]
-    discover_timeout = discover_http_timeout()
-    sem = asyncio.Semaphore(DISCOVERY_MAX_CONCURRENT)
-    limits = httpx.Limits(
-        max_connections=DISCOVERY_MAX_CONCURRENT + 4,
-        max_keepalive_connections=DISCOVERY_MAX_CONCURRENT,
-    )
+    ips = [f"{subnet}.{i}" for i in range(1, 255)]
+    begin_discovery(subnet, targets=len(ips))
 
-    async with httpx.AsyncClient(limits=limits, timeout=discover_timeout) as client:
-        raw = await asyncio.gather(
-            *[_bounded_fetch(client, sem, ip, "status", discover_timeout) for ip in ips]
+    try:
+        discover_timeout = discover_http_timeout()
+        sem = asyncio.Semaphore(DISCOVERY_MAX_CONCURRENT)
+        limits = httpx.Limits(
+            max_connections=DISCOVERY_MAX_CONCURRENT + 4,
+            max_keepalive_connections=DISCOVERY_MAX_CONCURRENT,
         )
-    results = [(ip, data) for ip, data, _ in raw]
-    active_payloads = [data for ip, data in results if data and "identity" in data]
 
-    async with httpx.AsyncClient(limits=limits, timeout=discover_timeout) as client:
-        config_tasks = [
-            _bounded_fetch(
-                client, sem, p["identity"]["ip"], "config", discover_timeout
+        async with httpx.AsyncClient(limits=limits, timeout=discover_timeout) as client:
+            raw = await asyncio.gather(
+                *[_bounded_fetch(client, sem, ip, "status", discover_timeout) for ip in ips]
             )
-            for p in active_payloads
-        ]
-        history_tasks = [
-            _bounded_fetch(
-                client, sem, p["identity"]["ip"], "history", discover_timeout
-            )
-            for p in active_payloads
-        ]
-        config_raw = await asyncio.gather(*config_tasks)
-        history_raw = await asyncio.gather(*history_tasks)
+        results = [(ip, data) for ip, data, _ in raw]
+        active_payloads = [data for ip, data in results if data and "identity" in data]
 
-    config_results = [(ip, data) for ip, data, _ in config_raw]
-    history_results = [(ip, data) for ip, data, _ in history_raw]
+        update_discovery(
+            phase="enriching",
+            responders=len(active_payloads),
+            detail=(
+                f"Found {len(active_payloads)} responder"
+                f"{'' if len(active_payloads) == 1 else 's'} on {subnet}.x; "
+                "loading config and history…"
+            ),
+        )
 
-    config_map = {ip: cfg for ip, cfg in config_results if cfg}
-    history_map = {ip: hist for ip, hist in history_results if hist}
-
-    with Session(engine) as session:
-        known_modules = {
-            normalize_mac(m.mac_address): m
-            for m in session.exec(select(RobotModule)).all()
-        }
-        for payload in active_payloads:
-            mac = normalize_mac(payload["identity"]["mac"])
-            ip = payload["identity"]["ip"]
-            node_cfg = config_map.get(ip, {})
-            sel_type = node_cfg.get("SELECTOR_TYPE", "UNKNOWN")
-            cam_type = node_cfg.get("CAMERA_TYPE", "UNKNOWN")
-            use_ntp = bool(node_cfg.get("USE_NTP", False)) if "USE_NTP" in node_cfg else None
-            ntp_server = node_cfg.get("NTP_SERVER")
-
-            if mac not in known_modules:
-                mod = RobotModule(
-                    mac_address=mac,
-                    hostname=payload["identity"]["hostname"],
-                    ip_address=ip,
-                    last_seen=datetime.utcnow(),
-                    selector_type=sel_type,
-                    camera_type=cam_type,
-                    use_ntp=use_ntp if use_ntp is not None else False,
-                    ntp_server=ntp_server or "pool.ntp.org",
+        async with httpx.AsyncClient(limits=limits, timeout=discover_timeout) as client:
+            config_tasks = [
+                _bounded_fetch(
+                    client, sem, p["identity"]["ip"], "config", discover_timeout
                 )
-                session.add(mod)
-            else:
-                mod = known_modules[mac]
-                mod.ip_address = ip
-                mod.last_seen = datetime.utcnow()
-                if sel_type != "UNKNOWN":
-                    mod.selector_type = sel_type
-                if cam_type != "UNKNOWN":
-                    mod.camera_type = cam_type
-                if use_ntp is not None:
-                    mod.use_ntp = use_ntp
-                if ntp_server:
-                    mod.ntp_server = ntp_server
-                session.add(mod)
+                for p in active_payloads
+            ]
+            history_tasks = [
+                _bounded_fetch(
+                    client, sem, p["identity"]["ip"], "history", discover_timeout
+                )
+                for p in active_payloads
+            ]
+            config_raw = await asyncio.gather(*config_tasks)
+            history_raw = await asyncio.gather(*history_tasks)
 
-            record_poll_success(mac, payload)
+        config_results = [(ip, data) for ip, data, _ in config_raw]
+        history_results = [(ip, data) for ip, data, _ in history_raw]
 
-        _merge_history_into_db(session, history_map)
-        session.commit()
+        config_map = {ip: cfg for ip, cfg in config_results if cfg}
+        history_map = {ip: hist for ip, hist in history_results if hist}
 
-    duration = time.monotonic() - t0
-    logger.info(
-        "Manual discovery complete: %d modules found (%.1fs)",
-        len(active_payloads),
-        duration,
-    )
-    return len(active_payloads)
+        update_discovery(
+            phase="saving",
+            detail="Registering / refreshing modules in the fleet database…",
+        )
+
+        with Session(engine) as session:
+            known_modules = {
+                normalize_mac(m.mac_address): m
+                for m in session.exec(select(RobotModule)).all()
+            }
+            for payload in active_payloads:
+                mac = normalize_mac(payload["identity"]["mac"])
+                ip = payload["identity"]["ip"]
+                node_cfg = config_map.get(ip, {})
+                sel_type = node_cfg.get("SELECTOR_TYPE", "UNKNOWN")
+                cam_type = node_cfg.get("CAMERA_TYPE", "UNKNOWN")
+                use_ntp = bool(node_cfg.get("USE_NTP", False)) if "USE_NTP" in node_cfg else None
+                ntp_server = node_cfg.get("NTP_SERVER")
+
+                if mac not in known_modules:
+                    mod = RobotModule(
+                        mac_address=mac,
+                        hostname=payload["identity"]["hostname"],
+                        ip_address=ip,
+                        last_seen=datetime.utcnow(),
+                        selector_type=sel_type,
+                        camera_type=cam_type,
+                        use_ntp=use_ntp if use_ntp is not None else False,
+                        ntp_server=ntp_server or "pool.ntp.org",
+                    )
+                    session.add(mod)
+                else:
+                    mod = known_modules[mac]
+                    mod.ip_address = ip
+                    mod.last_seen = datetime.utcnow()
+                    if sel_type != "UNKNOWN":
+                        mod.selector_type = sel_type
+                    if cam_type != "UNKNOWN":
+                        mod.camera_type = cam_type
+                    if use_ntp is not None:
+                        mod.use_ntp = use_ntp
+                    if ntp_server:
+                        mod.ntp_server = ntp_server
+                    session.add(mod)
+
+                record_poll_success(mac, payload)
+
+            _merge_history_into_db(session, history_map)
+            session.commit()
+
+        duration = time.monotonic() - t0
+        count = len(active_payloads)
+        finish_discovery(registered=count, duration_seconds=duration)
+        logger.info(
+            "Manual discovery complete: %d modules found (%.1fs)",
+            count,
+            duration,
+        )
+        message = (
+            f"Discovery complete on {subnet}.x ({duration:.1f}s). "
+            f"Found {count} module{'s' if count != 1 else ''}; "
+            "config and history refreshed."
+        )
+        return {
+            "count": count,
+            "subnet": subnet,
+            "duration_seconds": round(duration, 1),
+            "message": message,
+        }
+    except Exception as exc:
+        duration = time.monotonic() - t0
+        finish_discovery(registered=0, duration_seconds=duration, error=str(exc))
+        raise

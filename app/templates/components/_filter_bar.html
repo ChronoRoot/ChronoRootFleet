@@ -10,11 +10,19 @@
         <button class="btn btn-sm btn-outline-dark font-weight-bold" onclick="openCommanderTimeModal()" id="btn-commander-time">
             <i class="fas fa-clock"></i> Commander Time
         </button>
+        <button class="btn btn-sm btn-outline-primary font-weight-bold" onclick="openCommanderNetworkModal()" id="btn-commander-network">
+            <i class="fas fa-network-wired"></i> Network
+        </button>
     </div>
 </div>
 
+<div id="discovery-progress" class="alert alert-info py-2 px-3 mb-3 small d-none align-items-center gap-2" role="status" aria-live="polite">
+    <i class="fas fa-spinner fa-spin" id="discovery-progress-icon"></i>
+    <span id="discovery-progress-text">Preparing discovery…</span>
+</div>
+
 <div class="d-flex justify-content-between align-items-start mb-3 gap-3 fleet-toolbar">
-    <div class="d-flex flex-column flex-grow-1 fleet-toolbar-left">
+    <div class="fleet-toolbar-half d-flex flex-column">
         <div class="d-flex shadow-sm filter-bar align-items-center flex-wrap">
             <button class="btn btn-sm btn-filter active" onclick="filterView('ALL', this)">All <span id="count-ALL" class="badge bg-secondary text-white ms-1 rounded-pill">0</span></button>
             <button class="btn btn-sm btn-filter" onclick="filterView('RUNNING', this)">Running <span id="count-RUNNING" class="badge bg-primary text-white ms-1 rounded-pill">0</span></button>
@@ -47,7 +55,7 @@
                 id="descSearchInput"
                 type="text"
                 class="form-control form-control-sm me-2"
-                style="min-width: 180px;"
+                style="min-width: 160px;"
                 placeholder="Name or description"
                 oninput="onDescriptionSearchInput()"
             >
@@ -68,17 +76,19 @@
         </div>
     </div>
 
-    <div class="global-commands-panel flex-shrink-0">
-        <div class="small text-muted text-uppercase font-weight-bold mb-2 px-1">Global commands</div>
-        <div class="bulk-action-bar d-flex flex-column gap-2">
-            <div class="text-muted small">Selected: <strong id="selected-count" class="text-dark">0</strong></div>
+    <div class="fleet-toolbar-half d-flex align-items-start">
+        <div class="bulk-action-bar d-flex flex-column align-items-start gap-2">
+            <div class="d-flex align-items-baseline gap-2 flex-wrap">
+                <span class="font-weight-bold text-dark">Global Actions</span>
+                <span class="text-muted small">Modules selected: <strong id="selected-count" class="text-dark">0</strong></span>
+            </div>
             <div class="d-flex flex-wrap align-items-center gap-2">
-                <button class="btn btn-sm btn-outline-secondary font-weight-bold" onclick="executeBulk('DIAGNOSTIC')" title="Diagnostics"><i class="fas fa-stethoscope"></i> Diagnostics</button>
-                <button class="btn btn-sm btn-outline-danger font-weight-bold" onclick="executeBulk('REBOOT')" title="Reboot"><i class="fas fa-power-off"></i> Reboot</button>
-                <button class="btn btn-sm btn-outline-success font-weight-bold" onclick="executeBulk('UPDATE')" title="Update module software"><i class="fas fa-download"></i> Update</button>
-                <button class="btn btn-sm btn-outline-info font-weight-bold" onclick="executeBulk('SYNC')" title="Launch Sync"><i class="fas fa-cloud-upload-alt"></i> Sync</button>
-                <button class="btn btn-sm btn-dark font-weight-bold" onclick="openConfigModal()" title="Configure"><i class="fas fa-cogs"></i> Configure</button>
-                <button class="btn btn-sm btn-primary font-weight-bold" onclick="openExperimentModal()" title="Launch Batch Experiment"><i class="fas fa-flask"></i> Batch Exp</button>
+                <button class="btn btn-sm btn-outline-secondary font-weight-bold" onclick="executeBulk('DIAGNOSTIC')"><i class="fas fa-stethoscope"></i> Diagnostics</button>
+                <button class="btn btn-sm btn-outline-danger font-weight-bold" onclick="executeBulk('REBOOT')"><i class="fas fa-power-off"></i> Reboot</button>
+                <button class="btn btn-sm btn-outline-success font-weight-bold" onclick="executeBulk('UPDATE')"><i class="fas fa-download"></i> Update</button>
+                <button class="btn btn-sm btn-outline-info font-weight-bold" onclick="executeBulk('SYNC')"><i class="fas fa-cloud-upload-alt"></i> Launch Sync</button>
+                <button class="btn btn-sm btn-dark font-weight-bold" onclick="openConfigModal()"><i class="fas fa-cogs"></i> Configure</button>
+                <button class="btn btn-sm btn-primary font-weight-bold" onclick="openExperimentModal()"><i class="fas fa-flask"></i> Launch Batch Experiment</button>
             </div>
         </div>
     </div>
@@ -133,30 +143,118 @@
         updateSortDirectionIcon();
     });
 
+    let discoveryPollTimer = null;
+
+    function setDiscoveryProgressVisible(show) {
+        const el = document.getElementById('discovery-progress');
+        if (!el) return;
+        el.classList.toggle('d-none', !show);
+        el.classList.toggle('d-flex', show);
+    }
+
+    function renderDiscoveryProgress(data) {
+        const textEl = document.getElementById('discovery-progress-text');
+        const iconEl = document.getElementById('discovery-progress-icon');
+        const strip = document.getElementById('discovery-progress');
+        if (!textEl || !strip) return;
+
+        const detail = data.detail || 'Working…';
+        let extra = '';
+        if (data.phase === 'enriching' || data.phase === 'saving' || data.phase === 'done') {
+            if (data.responders != null) {
+                extra = ` (${data.responders} responder${data.responders === 1 ? '' : 's'})`;
+            }
+        }
+        textEl.textContent = detail + (data.phase === 'done' || data.phase === 'error' ? '' : extra);
+
+        strip.classList.remove('alert-info', 'alert-success', 'alert-danger');
+        if (data.phase === 'done') {
+            strip.classList.add('alert-success');
+            if (iconEl) iconEl.className = 'fas fa-check-circle';
+        } else if (data.phase === 'error') {
+            strip.classList.add('alert-danger');
+            if (iconEl) iconEl.className = 'fas fa-exclamation-triangle';
+        } else {
+            strip.classList.add('alert-info');
+            if (iconEl) iconEl.className = 'fas fa-spinner fa-spin';
+        }
+        setDiscoveryProgressVisible(true);
+    }
+
+    function stopDiscoveryPolling() {
+        if (discoveryPollTimer) {
+            clearInterval(discoveryPollTimer);
+            discoveryPollTimer = null;
+        }
+    }
+
+    function startDiscoveryPolling() {
+        stopDiscoveryPolling();
+        discoveryPollTimer = setInterval(async () => {
+            try {
+                const res = await fetch('/api/fleet/discover/status', { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                renderDiscoveryProgress(data);
+                if (!data.running && (data.phase === 'done' || data.phase === 'error' || data.phase === 'idle')) {
+                    stopDiscoveryPolling();
+                }
+            } catch (_) { /* ignore transient poll errors */ }
+        }, 400);
+    }
+
     async function triggerDiscovery() {
         const btn = document.getElementById('btn-discover');
         const originalText = btn.innerHTML;
         
         btn.disabled = true;
         btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Scanning Subnet...';
+        renderDiscoveryProgress({
+            phase: 'scanning',
+            detail: 'Starting subnet discovery…',
+            running: true,
+        });
+        startDiscoveryPolling();
         
         try {
             const res = await fetch('/api/fleet/discover', { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                const textError = await res.text();
-                throw new Error(textError);
+                const detail = data.detail;
+                const msg = typeof detail === 'string'
+                    ? detail
+                    : (data.message || `Discovery failed (HTTP ${res.status}).`);
+                renderDiscoveryProgress({ phase: 'error', detail: msg, running: false });
+                showToast(`<i class="fas fa-exclamation-triangle"></i> ${msg}`, 'danger');
+                return;
             }
-            const data = await res.json();
+            renderDiscoveryProgress({
+                phase: 'done',
+                detail: data.message,
+                responders: data.count,
+                registered: data.count,
+                running: false,
+            });
             showToast(`<i class="fas fa-satellite-dish"></i> ${data.message}`, 'success');
             
             let lastScanEl = document.getElementById('last-discovery-time');
             if (lastScanEl) lastScanEl.innerText = "Last Discovery: " + new Date().toLocaleTimeString();
             
             if(typeof fetchFleetData === 'function') fetchFleetData();
+
+            setTimeout(() => {
+                const strip = document.getElementById('discovery-progress');
+                if (strip && strip.classList.contains('alert-success')) {
+                    setDiscoveryProgressVisible(false);
+                }
+            }, 8000);
         } catch(e) {
             console.error("Discovery Error:", e);
+            const msg = e.message || 'Failed to scan subnet.';
+            renderDiscoveryProgress({ phase: 'error', detail: msg, running: false });
             showToast(`<i class="fas fa-exclamation-triangle"></i> Failed to scan subnet.`, 'danger');
         } finally {
+            stopDiscoveryPolling();
             btn.disabled = false;
             btn.innerHTML = originalText;
         }

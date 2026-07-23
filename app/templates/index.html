@@ -19,11 +19,12 @@
     .badge-soft-warning { background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5; }
     
     .bulk-action-bar { background: white; border: 1px solid #eaecf4; border-radius: 0.5rem; padding: 0.6rem 1.2rem; box-shadow: 0 0.15rem 1.75rem 0 rgba(58,59,69,0.1); }
-    .global-commands-panel { min-width: 300px; max-width: 440px; }
-    .fleet-toolbar-left { min-width: 0; }
-    @media (max-width: 1200px) {
+    .fleet-toolbar { width: 100%; }
+    .fleet-toolbar-half { flex: 1 1 0; min-width: 0; max-width: 50%; }
+    .fleet-toolbar-half .bulk-action-bar { width: 100%; justify-content: flex-start; }
+    @media (max-width: 992px) {
         .fleet-toolbar { flex-direction: column; }
-        .global-commands-panel { max-width: none; width: 100%; }
+        .fleet-toolbar-half { max-width: 100%; width: 100%; }
     }
     
     .filter-bar { background-color: #fff; border: 1px solid #eaecf4; padding: 0.25rem; border-radius: 50rem; }
@@ -58,5 +59,6 @@
 {% include 'components/_modal_exp.html' %}
 {% include 'components/_modal_config.html' %}
 {% include 'components/_modal_commander_time.html' %}
+{% include 'components/_modal_commander_network.html' %}
 
 {% endblock %}

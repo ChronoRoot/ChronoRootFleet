@@ -392,3 +392,68 @@ def get_commander_time_status() -> Dict[str, Any]:
         "ntp_server": _read_timesyncd_ntp_server(),
         "mode": "network" if ntp_enabled else "manual",
     }
+
+
+def _list_host_addresses() -> List[Dict[str, str]]:
+    """Return non-loopback IPv4 addresses with interface names when possible."""
+    addresses: List[Dict[str, str]] = []
+    try:
+        result = _run_host(
+            ["ip", "-4", "-o", "addr", "show"],
+            check=False,
+            timeout=5,
+        )
+        for line in (result.stdout or "").splitlines():
+            # e.g. "2: eth0    inet 10.0.0.5/24 ..."
+            parts = line.split()
+            if len(parts) < 4 or parts[2] != "inet":
+                continue
+            iface = parts[1].rstrip(":")
+            cidr = parts[3]
+            ip = cidr.split("/", 1)[0]
+            if ip.startswith("127."):
+                continue
+            addresses.append({"interface": iface, "address": ip, "cidr": cidr})
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        pass
+
+    if addresses:
+        return addresses
+
+    # Fallback: hostname -I
+    try:
+        result = _run_host(["hostname", "-I"], check=False, timeout=5)
+        for ip in (result.stdout or "").split():
+            if ip and not ip.startswith("127."):
+                addresses.append({"interface": "?", "address": ip, "cidr": ip})
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        pass
+    return addresses
+
+
+def get_commander_network_status() -> Dict[str, Any]:
+    """Discovery subnet, host addresses, and a coarse install-mode hint."""
+    from app.core import state as fleet_state
+
+    addresses = _list_host_addresses()
+    subnet = fleet_state.TARGET_SUBNET_BASE
+    has_ap_ip = any(
+        a.get("address") == "192.168.50.1" or a.get("interface") == "wlan0"
+        for a in addresses
+    )
+    if subnet == "192.168.50" or any(a.get("address") == "192.168.50.1" for a in addresses):
+        mode_hint = "hotspot"
+    elif has_ap_ip and subnet.startswith("192.168.50"):
+        mode_hint = "hotspot"
+    elif addresses:
+        mode_hint = "consumer"
+    else:
+        mode_hint = "unknown"
+
+    return {
+        "subnet": subnet,
+        "addresses": addresses,
+        "mode_hint": mode_hint,
+        "runtime_env_path": str(fleet_state.RUNTIME_ENV_PATH),
+        "persisted_in_file": fleet_state.has_persisted_subnet(),
+    }

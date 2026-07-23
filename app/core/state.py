@@ -1,11 +1,95 @@
 import os
+import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
 import httpx
 
-# --- NETWORK CONFIGURATION (env-overridable) ---
-TARGET_SUBNET_BASE = os.getenv("FLEET_TARGET_SUBNET", "192.168.1")
+# --- NETWORK CONFIGURATION (fleet_runtime.env, then env, then default) ---
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_ENV_PATH = Path(
+    os.environ.get("FLEET_RUNTIME_ENV", str(_REPO_ROOT / "fleet_runtime.env"))
+)
+_SUBNET_RE = re.compile(r"^(?:\d{1,3}\.){2}\d{1,3}$")
+
+
+def _read_runtime_env_value(key: str) -> Optional[str]:
+    try:
+        with open(RUNTIME_ENV_PATH, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return None
+
+
+def resolve_target_subnet() -> str:
+    """Prefer fleet_runtime.env (Network UI), then process env (installer), then 192.168.1."""
+    file_val = _read_runtime_env_value("FLEET_TARGET_SUBNET")
+    if file_val:
+        return file_val
+    env_val = (os.getenv("FLEET_TARGET_SUBNET") or "").strip()
+    if env_val:
+        return env_val
+    return "192.168.1"
+
+
+def has_persisted_subnet() -> bool:
+    return bool(_read_runtime_env_value("FLEET_TARGET_SUBNET"))
+
+
+def validate_subnet_base(subnet: str) -> str:
+    subnet = (subnet or "").strip()
+    if not _SUBNET_RE.match(subnet):
+        raise ValueError("Subnet must look like A.B.C (e.g. 192.168.1 or 192.168.50).")
+    parts = [int(p) for p in subnet.split(".")]
+    if any(p < 0 or p > 255 for p in parts):
+        raise ValueError("Each subnet octet must be between 0 and 255.")
+    return subnet
+
+
+def set_target_subnet(subnet: str) -> str:
+    """Update in-memory discovery subnet (does not persist)."""
+    global TARGET_SUBNET_BASE
+    TARGET_SUBNET_BASE = validate_subnet_base(subnet)
+    return TARGET_SUBNET_BASE
+
+
+def persist_target_subnet(subnet: str) -> str:
+    """Validate, apply in memory, and write FLEET_TARGET_SUBNET to fleet_runtime.env."""
+    subnet = validate_subnet_base(subnet)
+    lines = []
+    replaced = False
+    try:
+        with open(RUNTIME_ENV_PATH, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip().startswith("FLEET_TARGET_SUBNET="):
+                    lines.append(f"FLEET_TARGET_SUBNET={subnet}\n")
+                    replaced = True
+                else:
+                    lines.append(line)
+    except OSError:
+        lines = []
+
+    if not replaced:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] = lines[-1] + "\n"
+        lines.append(f"FLEET_TARGET_SUBNET={subnet}\n")
+
+    RUNTIME_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(RUNTIME_ENV_PATH, "w", encoding="utf-8") as fh:
+        fh.writelines(lines)
+
+    return set_target_subnet(subnet)
+
+
+TARGET_SUBNET_BASE = resolve_target_subnet()
 FAST_POLL_INTERVAL = int(os.getenv("FLEET_FAST_POLL_INTERVAL", "15"))
 FAST_POLL_INTERVAL_LARGE = int(os.getenv("FLEET_FAST_POLL_INTERVAL_LARGE", "30"))
 LARGE_FLEET_THRESHOLD = int(os.getenv("FLEET_LARGE_FLEET_THRESHOLD", "10"))
@@ -54,6 +138,92 @@ POLL_DIAGNOSTICS: Dict[str, Any] = {
     "failed_ips": [],
     "config": {},
 }
+
+# Manual Discover Nodes progress (polled by the dashboard while a sweep runs)
+DISCOVERY_PROGRESS: Dict[str, Any] = {
+    "running": False,
+    "phase": "idle",  # idle|scanning|enriching|saving|done|error
+    "subnet": "",
+    "targets": 254,
+    "responders": 0,
+    "registered": 0,
+    "detail": "",
+    "started_at": None,
+    "finished_at": None,
+    "duration_seconds": None,
+    "error": None,
+}
+
+
+def get_discovery_progress() -> Dict[str, Any]:
+    return dict(DISCOVERY_PROGRESS)
+
+
+def begin_discovery(subnet: str, targets: int = 254) -> None:
+    if DISCOVERY_PROGRESS.get("running"):
+        raise RuntimeError("Discovery is already running. Please wait for it to finish.")
+    now = datetime.utcnow().isoformat() + "Z"
+    DISCOVERY_PROGRESS.update(
+        {
+            "running": True,
+            "phase": "scanning",
+            "subnet": subnet,
+            "targets": targets,
+            "responders": 0,
+            "registered": 0,
+            "detail": f"Scanning {subnet}.1–.254 for ChronoRoot modules…",
+            "started_at": now,
+            "finished_at": None,
+            "duration_seconds": None,
+            "error": None,
+        }
+    )
+
+
+def update_discovery(**kwargs: Any) -> None:
+    for key, value in kwargs.items():
+        if key in DISCOVERY_PROGRESS:
+            DISCOVERY_PROGRESS[key] = value
+
+
+def finish_discovery(
+    *,
+    registered: int,
+    duration_seconds: float,
+    error: Optional[str] = None,
+) -> None:
+    now = datetime.utcnow().isoformat() + "Z"
+    subnet = DISCOVERY_PROGRESS.get("subnet") or TARGET_SUBNET_BASE
+    if error:
+        DISCOVERY_PROGRESS.update(
+            {
+                "running": False,
+                "phase": "error",
+                "registered": registered,
+                "duration_seconds": round(duration_seconds, 1),
+                "finished_at": now,
+                "error": error,
+                "detail": error,
+            }
+        )
+        return
+
+    DISCOVERY_PROGRESS.update(
+        {
+            "running": False,
+            "phase": "done",
+            "registered": registered,
+            "responders": max(DISCOVERY_PROGRESS.get("responders") or 0, registered),
+            "duration_seconds": round(duration_seconds, 1),
+            "finished_at": now,
+            "error": None,
+            "detail": (
+                f"Discovery complete on {subnet}.x "
+                f"({duration_seconds:.1f}s). Found {registered} modules; "
+                "config and history refreshed."
+            ),
+        }
+    )
 
 
 def poll_http_timeout() -> httpx.Timeout:

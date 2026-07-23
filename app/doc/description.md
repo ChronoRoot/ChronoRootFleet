@@ -10,7 +10,12 @@ To achieve this, the Fleet Controller relies heavily on a "Pull" discovery archi
 
 ## 2. Network Topology and Device Discovery
 
-The system is designed to operate on a dedicated subnetwork (configurable via `FLEET_TARGET_SUBNET`, default `192.168.1`; ChronoRoot lab deployments often use `10.42.0.x`), physically isolated from enterprise networks to bypass strict firewall policies.
+The Fleet Commander supports two common bare-metal topologies (see the README installers):
+
+* **LAN consumer (`setup.sh`):** the commander joins an existing lab network. Set discovery to that network’s `/24` base via `FLEET_TARGET_SUBNET` (systemd) or the dashboard **Network** button (persisted in `fleet_runtime.env`).
+* **Hotspot + share (`setup_hotspot.sh`):** the commander runs a Wi‑Fi AP on `wlan0` (`ChronoRootWifi`, gateway `192.168.50.1`), DHCP via dnsmasq, and optional NAT from the uplink interface so modules can reach the internet through the commander. Discovery defaults to `192.168.50`.
+
+Discovery itself is configurable via `FLEET_TARGET_SUBNET` (default `192.168.1`; hotspot installs use `192.168.50`). ChronoRoot lab deployments often use `10.42.0.x`. The network is typically kept physically or logically isolated from enterprise networks to bypass strict firewall policies.
 
 Because we require **Zero-Touch Module Integration**, individual modules do not broadcast to the Master, nor do they require any custom software modifications to communicate with it. The Master handles network interactions through two distinct engines:
 

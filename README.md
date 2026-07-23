@@ -52,9 +52,63 @@ Central orchestration hub for the [ChronoRoot](https://chronoroot.github.io/) au
 
 ## Installation
 
-The Fleet Commander can run in Docker (recommended for PCs/servers) or directly on a Raspberry Pi.
+Choose how the Fleet Commander attaches to the lab:
 
-### Option 1: Docker (PC / Server)
+| Mode | Script | Use when |
+| :--- | :--- | :--- |
+| **LAN consumer** | `setup.sh` | The Pi joins an existing Ethernet/Wi‑Fi LAN where modules already live |
+| **Hotspot + share** | `setup_hotspot.sh` | The Pi creates a Wi‑Fi AP for modules and can share uplink internet (usually Ethernet) via NAT |
+| **Docker** | `docker compose` | PC/server with host networking (see below) |
+
+Clone once, then run the matching installer from the project directory (recommended path `/srv/ChronoRootFleet`):
+
+```bash
+sudo mkdir -p /srv
+sudo git clone https://github.com/ChronoRoot/ChronoRootFleet.git /srv/ChronoRootFleet
+cd /srv/ChronoRootFleet
+```
+
+### Option A: LAN consumer (`setup.sh`)
+
+The Pi is a normal client on your lab network. Discovery defaults to subnet `192.168.1` unless you set `FLEET_TARGET_SUBNET` (systemd env or the dashboard **Network** button).
+
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+Access the dashboard at `http://<pi-ip>/`. Align discovery with your LAN (e.g. `10.42.0`) via **Network** on the home page, or:
+
+```bash
+# in fleetcontrol.service
+Environment="FLEET_TARGET_SUBNET=10.42.0"
+sudo systemctl daemon-reload && sudo systemctl restart fleetcontrol
+```
+
+### Option B: Hotspot + share (`setup_hotspot.sh`)
+
+Creates an access point so modules can join an isolated chamber network while the commander optionally NATs traffic from its default uplink (Ethernet/Wi‑Fi) to `wlan0`.
+
+| Setting | Value |
+| :--- | :--- |
+| SSID | `ChronoRootWifi` |
+| Password | `chronoroot` |
+| Commander AP IP | `192.168.50.1` |
+| DHCP range | `192.168.50.10`–`.200` |
+| Local DNS name | `commander.fleet.local` |
+| Discovery subnet | `192.168.50` (set in the systemd unit) |
+
+```bash
+chmod +x setup_hotspot.sh
+./setup_hotspot.sh
+```
+
+- Join modules to **ChronoRootWifi**.
+- Open the dashboard at `http://192.168.50.1/` or `http://commander.fleet.local/` when connected to the AP.
+- SSH is enabled on port 22 on the AP interface.
+- If no default route exists at install time, NAT is skipped until an uplink appears (re-run NAT rules or reconnect Ethernet and refresh iptables as needed).
+
+### Option C: Docker (PC / Server)
 
 ```bash
 git clone https://github.com/ChronoRoot/ChronoRootFleet.git
@@ -62,27 +116,13 @@ cd ChronoRootFleet
 docker compose up -d --build
 ```
 
-Open `http://localhost:8000` (or the host machine's IP). Docker uses `network_mode: host` so the commander can reach edge nodes on the local subnet.
+Open `http://localhost:8000` (or the host machine's IP). Docker uses `network_mode: host` so the commander can reach edge nodes on the local subnet. Set `FLEET_TARGET_SUBNET` in the compose environment if your modules are not on `192.168.1.x`.
 
 The SQLite database is stored in the `chronoroot_fleet_data` Docker volume at `/data/fleet_data.db`.
 
-### Option 2: Raspberry Pi
+### Service PATH, sudo, and offline assets
 
-Running without Docker is recommended on low-resource devices. The setup script installs dependencies, creates a `systemd` service, and configures NGINX as a reverse proxy.
-
-**Important:** The systemd unit expects the project at `/srv/ChronoRootFleet`. Clone there, or edit `WorkingDirectory` in the generated service file.
-
-```bash
-sudo mkdir -p /srv
-sudo git clone https://github.com/ChronoRoot/ChronoRootFleet.git /srv/ChronoRootFleet
-cd /srv/ChronoRootFleet
-chmod +x setup.sh
-./setup.sh
-```
-
-Access the dashboard at `http://<pi-ip>/`.
-
-The systemd unit created by `setup.sh` runs as the installing user (not root). Its `PATH` must include both the project venv **and** system binaries (`/usr/bin`, …) so `git`, `sudo`, and `timedatectl` resolve. New installs get this automatically; existing units that only set `PATH=…/venv/bin` should be updated and the service restarted:
+The systemd unit runs as the installing user (not root). Its `PATH` must include both the project venv **and** system binaries (`/usr/bin`, …) so `git`, `sudo`, and `timedatectl` resolve. New installs get this automatically; existing units that only set `PATH=…/venv/bin` should be updated and the service restarted:
 
 ```bash
 sudo systemctl edit --full fleetcontrol
@@ -92,8 +132,6 @@ sudo systemctl restart fleetcontrol
 ```
 
 Commander time/NTP and post-update restarts use `sudo -n` for `timedatectl`, `date`, `sed`, and `systemctl`. Grant passwordless sudo for those commands to the service user (same pattern as ChronoRootControl modules), or run the unit as root.
-
-#### Offline UI assets
 
 Bootstrap 5.3 and Font Awesome 5.15.4 ship under `app/static/vendor/`. To refresh them on a machine with internet before deploying to an isolated Pi:
 
@@ -112,7 +150,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create `/etc/systemd/system/fleetcontrol.service` pointing `WorkingDirectory` and `ExecStart` at `/srv/ChronoRootFleet`, then configure NGINX to proxy port 80 → `127.0.0.1:8000`. See `setup.sh` for reference templates.
+Create `/etc/systemd/system/fleetcontrol.service` pointing `WorkingDirectory` and `ExecStart` at `/srv/ChronoRootFleet`, then configure NGINX to proxy port 80 → `127.0.0.1:8000`. See `setup.sh` / `setup_hotspot.sh` for reference templates.
 
 ## Usage
 
@@ -124,6 +162,9 @@ Next to **Discover Nodes**:
 
 * **Update Software** — `git pull` on the Fleet Commander install directory; restarts `fleetcontrol` if code changed.
 * **Commander Time** — set NTP server (network mode) or a manual date/time on the commander host.
+* **Network** — view host addresses and change the **discovery subnet** (`FLEET_TARGET_SUBNET`, e.g. `192.168.1` or `192.168.50`) without editing systemd.
+
+Bulk **Update** on modules requires ChronoRootControl builds that expose `POST /api/update`. Older modules return HTTP 405 (Flask treats `update` as an experiment id). Update those Pis once via SSH/`git pull`, then fleet Update will work.
 
 After upgrading, click **Discover** once so each module’s `USE_NTP` flag is copied into the fleet database (fixes System Clock badges that previously always showed NTP).
 
@@ -155,6 +196,8 @@ Click **Remote View** on any online module to tunnel into its native UI through 
 | `POST /api/commander/update` | `git pull` on the Fleet Commander; restart if changed |
 | `GET /api/commander/time` | Commander host clock / NTP snapshot |
 | `POST /api/commander/time` | Set commander NTP or manual time |
+| `GET /api/commander/network` | Discovery subnet + host addresses |
+| `PUT /api/commander/network` | Persist discovery subnet (`FLEET_TARGET_SUBNET`) |
 | `GET /api/fleet/db/experiments` | Historical batch data |
 | `GET /proxy/{mac}/{path}` | Reverse proxy to edge node UI |
 
@@ -164,7 +207,8 @@ Full interactive docs are available at `/docs` when the server is running.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `FLEET_TARGET_SUBNET` | `192.168.1` | Subnet base for manual discovery (e.g. `10.42.0`) |
+| `FLEET_TARGET_SUBNET` | `192.168.1` (or file / hotspot `192.168.50`) | Subnet base for Discover (`.1`–`.254`); `fleet_runtime.env` from the Network UI overrides installer env |
+| `FLEET_RUNTIME_ENV` | `<repo>/fleet_runtime.env` | Path for persisted runtime settings (subnet); surviving service restarts |
 | `FLEET_MAX_CONCURRENT_POLLS` | `12` | Max parallel status polls per cycle |
 | `FLEET_CONNECT_TIMEOUT` | `3` | TCP connect timeout (seconds) |
 | `FLEET_READ_TIMEOUT` | `15` | `/api/status` read timeout (seconds) |

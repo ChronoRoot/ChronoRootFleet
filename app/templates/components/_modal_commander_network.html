@@ -1,0 +1,114 @@
+<div class="modal fade" id="commanderNetworkModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog">
+    <div class="modal-content shadow">
+      <div class="modal-header bg-dark text-white border-0 py-3">
+        <h5 class="modal-title"><i class="fas fa-network-wired"></i> Commander Network</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body bg-light">
+        <div id="cmd-net-alert"></div>
+        <p class="small text-muted mb-2">
+          Install mode hint:
+          <span class="badge bg-secondary" id="cmd-net-mode">—</span>
+        </p>
+        <div class="mb-3">
+          <label class="small text-muted text-uppercase font-weight-bold mb-1">Host addresses</label>
+          <ul class="list-unstyled small mb-0 font-monospace" id="cmd-net-addresses">
+            <li class="text-muted">—</li>
+          </ul>
+        </div>
+        <div class="mb-2">
+          <label class="small text-muted text-uppercase font-weight-bold mb-1" for="cmd-net-subnet">Discovery subnet (A.B.C)</label>
+          <input type="text" class="form-control form-control-sm" id="cmd-net-subnet" placeholder="192.168.1" pattern="\d{1,3}\.\d{1,3}\.\d{1,3}">
+          <div class="form-text">Used by Discover to scan <code>A.B.C.1</code>–<code>.254</code> (usable hosts; <code>.255</code> is the network broadcast address and is not scanned). Does not change the Pi’s OS IP. Saving restarts the Fleet Commander service.</div>
+        </div>
+        <p class="small text-muted mb-0" id="cmd-net-env-note" style="display: none;"></p>
+      </div>
+      <div class="modal-footer bg-white border-0">
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm btn-primary font-weight-bold" id="btn-cmd-net-apply" onclick="submitCommanderNetwork()">
+          <i class="fas fa-check"></i> Apply
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+    async function openCommanderNetworkModal() {
+        const alertEl = document.getElementById('cmd-net-alert');
+        if (alertEl) alertEl.innerHTML = '';
+        try {
+            const res = await fetch('/api/commander/network');
+            if (!res.ok) throw new Error('Failed to load network settings');
+            const data = await res.json();
+            const modeEl = document.getElementById('cmd-net-mode');
+            const hint = data.mode_hint || 'unknown';
+            modeEl.innerText = hint;
+            modeEl.className = hint === 'hotspot'
+                ? 'badge bg-info'
+                : (hint === 'consumer' ? 'badge bg-secondary' : 'badge bg-warning text-dark');
+
+            const list = document.getElementById('cmd-net-addresses');
+            const addrs = data.addresses || [];
+            if (!addrs.length) {
+                list.innerHTML = '<li class="text-muted">No non-loopback IPv4 addresses found.</li>';
+            } else {
+                list.innerHTML = addrs.map(a =>
+                    `<li><span class="text-muted">${a.interface || '?'}:</span> ${a.cidr || a.address}</li>`
+                ).join('');
+            }
+
+            document.getElementById('cmd-net-subnet').value = data.subnet || '';
+            const note = document.getElementById('cmd-net-env-note');
+            if (data.persisted_in_file) {
+                note.style.display = 'block';
+                note.innerText = 'Saved in fleet_runtime.env (takes priority over the installer systemd env on restart).';
+            } else {
+                note.style.display = 'none';
+                note.innerText = '';
+            }
+
+            const modal = new bootstrap.Modal(document.getElementById('commanderNetworkModal'));
+            modal.show();
+        } catch (e) {
+            console.error(e);
+            showToast('<i class="fas fa-exclamation-triangle"></i> Could not load network settings.', 'danger');
+        }
+    }
+
+    async function submitCommanderNetwork() {
+        const btn = document.getElementById('btn-cmd-net-apply');
+        const alertEl = document.getElementById('cmd-net-alert');
+        const subnet = document.getElementById('cmd-net-subnet').value.trim();
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+        try {
+            const res = await fetch('/api/commander/network', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ subnet }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                const msg = (typeof formatApiDetail === 'function')
+                    ? formatApiDetail(data.detail, data.message || 'Failed to save subnet.')
+                    : (typeof data.detail === 'string' ? data.detail : (data.message || 'Failed to save subnet.'));
+                const html = (typeof escapeHtmlMultiline === 'function')
+                    ? escapeHtmlMultiline(msg)
+                    : msg;
+                alertEl.innerHTML = `<div class="alert alert-danger py-2 small">${html}</div>`;
+                return;
+            }
+            showToast(`<i class="fas fa-check"></i> ${data.message || 'Discovery subnet updated.'}`, data.restarting ? 'warning' : 'success');
+            bootstrap.Modal.getInstance(document.getElementById('commanderNetworkModal'))?.hide();
+        } catch (e) {
+            console.error(e);
+            alertEl.innerHTML = '<div class="alert alert-danger py-2 small">Request failed.</div>';
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+</script>

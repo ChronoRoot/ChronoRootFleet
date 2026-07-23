@@ -31,20 +31,21 @@ unmanaged-devices=interface-name:wlan0
 EOF
 sudo systemctl restart NetworkManager
 
-# 3. Configure Static IP for wlan0 via Systemd
+# 3. Configure Static IP for wlan0 via Systemd (With Timing Fixes)
 echo "[3/8] Setting up static IP service for wlan0..."
 cat << EOF | sudo tee /etc/systemd/system/wlan0-ip.service > /dev/null
 [Unit]
 Description=Assign IP to wlan0 for Fleet AP
-Before=hostapd.service
-BindsTo=sys-subsystem-net-devices-wlan0.device
-After=sys-subsystem-net-devices-wlan0.device
+After=sys-subsystem-net-devices-wlan0.device hostapd.service
+Requires=sys-subsystem-net-devices-wlan0.device
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/bin/sleep 3
 ExecStart=/sbin/ip link set dev wlan0 up
 ExecStart=/sbin/ip addr add 192.168.50.1/24 dev wlan0
+ExecStartPost=/bin/systemctl restart dnsmasq
 
 [Install]
 WantedBy=multi-user.target
@@ -70,7 +71,7 @@ driver=nl80211
 ssid=ChronoRootWifi
 hw_mode=g
 channel=7
-wmm_enabled=0
+wmm_enabled=1
 macaddr_acl=0
 auth_algs=1
 ignore_broadcast_ssid=0

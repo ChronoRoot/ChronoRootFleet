@@ -173,6 +173,16 @@ async def bulk_software_update(req: BulkActionRequest):
     """Pull latest ChronoRootControl code on selected modules; restart when changed."""
     results = await broadcast_to_nodes(req.target_macs, "POST", "update", timeout=130.0)
 
+    UPDATE_405_HINT = (
+        "Module firmware missing POST /api/update (often an older ChronoRootControl). "
+        "Update that Pi once via SSH/git pull, then retry."
+    )
+
+    for r in results:
+        msg = str(r.get("message") or "")
+        if r.get("status") == "error" and "405" in msg:
+            r["message"] = UPDATE_405_HINT
+
     changed_macs = [
         r["mac"]
         for r in results
@@ -189,6 +199,12 @@ async def bulk_software_update(req: BulkActionRequest):
         parts.append(f"{len(changed_macs)} restarted")
     if failed:
         parts.append(f"{failed} failed")
+    has_405 = any(
+        r.get("status") == "error" and UPDATE_405_HINT in str(r.get("message") or "")
+        for r in results
+    )
+    if has_405:
+        parts.append("some modules need a one-time manual ChronoRootControl upgrade")
     # Surface a few per-node messages for the toast
     snippets = []
     for r in results[:5]:
