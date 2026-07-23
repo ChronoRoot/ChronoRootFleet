@@ -37,7 +37,7 @@ After=network.target
 User=$CURRENT_USER
 Group=www-data
 WorkingDirectory=$CURRENT_DIR
-Environment="PATH=$CURRENT_DIR/venv/bin"
+Environment="PATH=$CURRENT_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="FLEET_MAX_CONCURRENT_POLLS=12"
 Environment="FLEET_CONNECT_TIMEOUT=3"
 Environment="FLEET_READ_TIMEOUT=15"

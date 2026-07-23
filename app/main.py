@@ -3,17 +3,19 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
 from app.database import create_db_and_tables
 from app.core import state as fleet_state
 from app.core.sweeper import fast_monitor_loop
-from app.routers import views, api_fleet, api_node, api_discovery, proxy
+from app.routers import views, api_fleet, api_node, api_discovery, api_commander, proxy
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -80,10 +82,15 @@ app = FastAPI(title="ChronoRoot Fleet Controller", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(ProxySandboxMiddleware)
 
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
 app.include_router(views.router)
 app.include_router(api_fleet.router)
 app.include_router(api_node.router)
 app.include_router(api_discovery.router)
+app.include_router(api_commander.router)
 app.include_router(proxy.router)
 
 

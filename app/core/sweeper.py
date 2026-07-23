@@ -502,6 +502,8 @@ async def execute_discovery_sweep():
             node_cfg = config_map.get(ip, {})
             sel_type = node_cfg.get("SELECTOR_TYPE", "UNKNOWN")
             cam_type = node_cfg.get("CAMERA_TYPE", "UNKNOWN")
+            use_ntp = bool(node_cfg.get("USE_NTP", False)) if "USE_NTP" in node_cfg else None
+            ntp_server = node_cfg.get("NTP_SERVER")
 
             if mac not in known_modules:
                 mod = RobotModule(
@@ -511,6 +513,8 @@ async def execute_discovery_sweep():
                     last_seen=datetime.utcnow(),
                     selector_type=sel_type,
                     camera_type=cam_type,
+                    use_ntp=use_ntp if use_ntp is not None else False,
+                    ntp_server=ntp_server or "pool.ntp.org",
                 )
                 session.add(mod)
             else:
@@ -521,6 +525,10 @@ async def execute_discovery_sweep():
                     mod.selector_type = sel_type
                 if cam_type != "UNKNOWN":
                     mod.camera_type = cam_type
+                if use_ntp is not None:
+                    mod.use_ntp = use_ntp
+                if ntp_server:
+                    mod.ntp_server = ntp_server
                 session.add(mod)
 
             record_poll_success(mac, payload)

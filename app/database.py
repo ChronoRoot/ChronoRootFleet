@@ -13,7 +13,7 @@ class RobotModule(SQLModel, table=True):
     # --- Quality of Life & Time Tracking ---
     alias: Optional[str] = Field(default=None)
     description: Optional[str] = Field(default=None) 
-    use_ntp: bool = Field(default=True)
+    use_ntp: bool = Field(default=False)
     ntp_server: str = Field(default="pool.ntp.org")
     
     selector_type: str = Field(default="UNKNOWN")

@@ -806,14 +806,19 @@
         }
         
         const isDanger = action === 'REBOOT';
-        const confirmed = await asyncConfirm('Confirm Bulk Action', `Send ${action} command to ${selectedMacs.size} modules?`, isDanger);
+        let confirmMsg = `Send ${action} command to ${selectedMacs.size} modules?`;
+        if (action === 'UPDATE') {
+            confirmMsg = `Pull latest software on ${selectedMacs.size} modules? Nodes with new code will restart their service.`;
+        }
+        const confirmed = await asyncConfirm('Confirm Bulk Action', confirmMsg, isDanger);
         if (!confirmed) return;
         
         let endpoint = '';
         if (action === 'DIAGNOSTIC') endpoint = '/api/fleet/bulk/diagnostic';
         if (action === 'REBOOT') endpoint = '/api/fleet/bulk/reboot';
         if (action === 'TIME_SYNC') endpoint = '/api/fleet/bulk/time_sync_manual'; 
-        if (action === 'SYNC') endpoint = '/api/fleet/bulk/sync/trigger'; 
+        if (action === 'SYNC') endpoint = '/api/fleet/bulk/sync/trigger';
+        if (action === 'UPDATE') endpoint = '/api/fleet/bulk/update';
 
         const buttons = document.querySelectorAll('.bulk-action-bar button');
         buttons.forEach(b => b.disabled = true);
@@ -825,7 +830,7 @@
                 body: JSON.stringify({ target_macs: Array.from(selectedMacs) })
             });
             const result = await response.json();
-            showToast(result.message || `${action} broadcast complete.`, 'success');
+            showToast(result.message || `${action} broadcast complete.`, response.ok ? 'success' : 'danger');
             
         } catch(e) { 
             showToast("Action failed to execute.", 'danger');

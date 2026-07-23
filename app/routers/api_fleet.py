@@ -95,6 +95,22 @@ async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_pa
                     resp_data = {"text": res.text}
 
                 return {"mac": mac, "status": "success", "data": resp_data}
+            except httpx.HTTPStatusError as e:
+                try:
+                    resp_data = e.response.json() if e.response.content else {}
+                except Exception:
+                    resp_data = {"text": e.response.text}
+                message = (
+                    resp_data.get("message")
+                    or resp_data.get("error")
+                    or str(e)
+                )
+                return {
+                    "mac": mac,
+                    "status": "error",
+                    "message": message,
+                    "data": resp_data,
+                }
             except Exception as e:
                 return {"mac": mac, "status": "error", "message": str(e)}
             
@@ -151,6 +167,40 @@ async def bulk_reboot(req: BulkActionRequest):
     results = await broadcast_to_nodes(req.target_macs, "POST", "reboot", timeout=2.0)
     return {"status": "complete", "results": results}
 
+
+@router.post("/bulk/update")
+async def bulk_software_update(req: BulkActionRequest):
+    """Pull latest ChronoRootControl code on selected modules; restart when changed."""
+    results = await broadcast_to_nodes(req.target_macs, "POST", "update", timeout=130.0)
+
+    changed_macs = [
+        r["mac"]
+        for r in results
+        if r.get("status") == "success" and (r.get("data") or {}).get("changed")
+    ]
+    if changed_macs:
+        await asyncio.sleep(0.5)
+        await broadcast_to_nodes(changed_macs, "GET", "restart_service", timeout=1.5)
+
+    ok = sum(1 for r in results if r.get("status") == "success")
+    failed = len(results) - ok
+    parts = [f"Update complete: {ok} ok"]
+    if changed_macs:
+        parts.append(f"{len(changed_macs)} restarted")
+    if failed:
+        parts.append(f"{failed} failed")
+    # Surface a few per-node messages for the toast
+    snippets = []
+    for r in results[:5]:
+        msg = (r.get("data") or {}).get("message") or r.get("message") or r.get("status")
+        snippets.append(f"{r.get('mac')}: {msg}")
+    message = "; ".join(parts)
+    if snippets:
+        message = message + " — " + " | ".join(snippets)
+
+    return {"status": "complete", "results": results, "message": message}
+
+
 @router.post("/bulk/time")
 async def bulk_time_sync(req: BulkTimeSyncRequest):
     base_payload = req.model_dump(exclude={"target_macs", "date_str"}, exclude_unset=True)
@@ -164,6 +214,21 @@ async def bulk_time_sync(req: BulkTimeSyncRequest):
         return base_payload
 
     results = await broadcast_to_nodes(req.target_macs, "POST", "config/time", get_payload_fn=get_time_payload)
+
+    # Keep Fleet DB clock-mode flags aligned when mode is known
+    if req.mode in ("network", "manual"):
+        use_ntp = req.mode == "network"
+        with Session(engine) as session:
+            for mac in req.target_macs:
+                mod = session.get(RobotModule, normalize_mac(mac)) or session.get(RobotModule, mac)
+                if not mod:
+                    continue
+                mod.use_ntp = use_ntp
+                if req.ntp_server:
+                    mod.ntp_server = req.ntp_server
+                session.add(mod)
+            session.commit()
+
     return {"status": "complete", "results": results}
 
 
@@ -173,7 +238,7 @@ async def bulk_config_update(req: BulkConfigRequest):
     req_dict = req.model_dump(exclude={"target_macs"}, exclude_unset=True)
     
     # --- 1. Map General System Keys ---
-    general_keys = ["TIME_ZONE", "NTP_SERVER", "USE_NTP"] # <--- FIXED: Added USE_NTP
+    general_keys = ["TIME_ZONE", "NTP_SERVER", "USE_NTP"]
     general_payload = {k: v for k, v in req_dict.items() if k in general_keys}
     
     # --- 2. Map Sync Keys (Translate Case for Flask API) ---
@@ -200,6 +265,60 @@ async def bulk_config_update(req: BulkConfigRequest):
         res_sync = await broadcast_to_nodes(req.target_macs, "POST", "sync/config", get_payload_fn=get_sync_payload)
         results.extend(res_sync)
         successful_macs.update([r["mac"] for r in res_sync if r["status"] == "success"])
+
+    # --- 4b. Apply OS time/NTP when clock settings were changed ---
+    time_keys_touched = any(k in general_payload for k in ("USE_NTP", "NTP_SERVER", "TIME_ZONE"))
+    if time_keys_touched and successful_macs:
+        use_ntp = general_payload.get("USE_NTP")
+        timezone = general_payload.get("TIME_ZONE")
+        ntp_server = general_payload.get("NTP_SERVER")
+        master_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Resolve per-MAC mode from request, else current Fleet DB flag
+        db_ntp_by_mac = {}
+        with Session(engine) as session:
+            for mac in successful_macs:
+                mod = session.get(RobotModule, normalize_mac(mac)) or session.get(RobotModule, mac)
+                if mod:
+                    db_ntp_by_mac[normalize_mac(mac)] = mod.use_ntp
+
+        def get_os_time_payload(mac, state):
+            mac_ntp = use_ntp
+            if mac_ntp is None:
+                mac_ntp = db_ntp_by_mac.get(normalize_mac(mac), False)
+            if mac_ntp:
+                payload = {"mode": "network"}
+                if timezone:
+                    payload["timezone"] = timezone
+                if ntp_server:
+                    payload["ntp_server"] = ntp_server
+                return payload
+            payload = {"mode": "manual", "date": master_time}
+            if timezone:
+                payload["timezone"] = timezone
+            return payload
+
+        res_time = await broadcast_to_nodes(
+            list(successful_macs),
+            "POST",
+            "config/time",
+            get_payload_fn=get_os_time_payload,
+            timeout=10.0,
+        )
+        results.extend(res_time)
+
+        # Persist Fleet DB flags for successful config targets
+        with Session(engine) as session:
+            for mac in successful_macs:
+                mod = session.get(RobotModule, normalize_mac(mac)) or session.get(RobotModule, mac)
+                if not mod:
+                    continue
+                if use_ntp is not None:
+                    mod.use_ntp = bool(use_ntp)
+                if ntp_server:
+                    mod.ntp_server = ntp_server
+                session.add(mod)
+            session.commit()
         
     # --- 5. Restart Updated Nodes ---
     if successful_macs:

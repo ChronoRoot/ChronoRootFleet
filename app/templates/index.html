@@ -19,6 +19,12 @@
     .badge-soft-warning { background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5; }
     
     .bulk-action-bar { background: white; border: 1px solid #eaecf4; border-radius: 0.5rem; padding: 0.6rem 1.2rem; box-shadow: 0 0.15rem 1.75rem 0 rgba(58,59,69,0.1); }
+    .global-commands-panel { min-width: 300px; max-width: 440px; }
+    .fleet-toolbar-left { min-width: 0; }
+    @media (max-width: 1200px) {
+        .fleet-toolbar { flex-direction: column; }
+        .global-commands-panel { max-width: none; width: 100%; }
+    }
     
     .filter-bar { background-color: #fff; border: 1px solid #eaecf4; padding: 0.25rem; border-radius: 50rem; }
     .btn-filter { color: #6c757d; font-weight: 600; border-radius: 50rem; padding: 0.4rem 1.25rem; border: none; background: transparent; transition: all 0.2s ease; }
@@ -51,5 +57,6 @@
 
 {% include 'components/_modal_exp.html' %}
 {% include 'components/_modal_config.html' %}
+{% include 'components/_modal_commander_time.html' %}
 
 {% endblock %}

@@ -1,15 +1,21 @@
 
 <div class="d-flex justify-content-between align-items-center mb-3 border-bottom pb-3">
-    <div class="d-flex align-items-center">
-        <button class="btn btn-sm btn-outline-info font-weight-bold mr-3" onclick="triggerDiscovery()" id="btn-discover">
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+        <button class="btn btn-sm btn-outline-info font-weight-bold" onclick="triggerDiscovery()" id="btn-discover">
             <i class="fas fa-satellite-dish"></i> Discover Nodes
+        </button>
+        <button class="btn btn-sm btn-outline-secondary font-weight-bold" onclick="updateCommanderSoftware()" id="btn-commander-update">
+            <i class="fas fa-download"></i> Update Software
+        </button>
+        <button class="btn btn-sm btn-outline-dark font-weight-bold" onclick="openCommanderTimeModal()" id="btn-commander-time">
+            <i class="fas fa-clock"></i> Commander Time
         </button>
     </div>
 </div>
 
-<div class="d-flex justify-content-between align-items-start mb-3 gap-3">
-    <div class="d-flex flex-column">
-        <div class="d-flex shadow-sm filter-bar align-items-center">
+<div class="d-flex justify-content-between align-items-start mb-3 gap-3 fleet-toolbar">
+    <div class="d-flex flex-column flex-grow-1 fleet-toolbar-left">
+        <div class="d-flex shadow-sm filter-bar align-items-center flex-wrap">
             <button class="btn btn-sm btn-filter active" onclick="filterView('ALL', this)">All <span id="count-ALL" class="badge bg-secondary text-white ms-1 rounded-pill">0</span></button>
             <button class="btn btn-sm btn-filter" onclick="filterView('RUNNING', this)">Running <span id="count-RUNNING" class="badge bg-primary text-white ms-1 rounded-pill">0</span></button>
             <button class="btn btn-sm btn-filter" onclick="filterView('IDLE', this)">Standby <span id="count-IDLE" class="badge bg-light text-dark border ms-1 rounded-pill">0</span></button>
@@ -25,7 +31,7 @@
             </div>
         </div>
 
-        <div class="d-flex justify-content-between align-items-center mt-2">
+        <div class="d-flex align-items-center mt-2 flex-wrap gap-2">
             <div class="d-inline-flex shadow-sm filter-bar align-items-center">
             <label for="sortKeySelect" class="small text-muted font-weight-bold mb-0 ms-2 me-2">Sort</label>
             <select id="sortKeySelect" class="form-select form-select-sm me-2" style="min-width: 145px;" onchange="onSortChanged()">
@@ -41,7 +47,7 @@
                 id="descSearchInput"
                 type="text"
                 class="form-control form-control-sm me-2"
-                style="min-width: 220px;"
+                style="min-width: 180px;"
                 placeholder="Name or description"
                 oninput="onDescriptionSearchInput()"
             >
@@ -50,7 +56,7 @@
             </button>
             </div>
 
-            <div class="d-inline-flex shadow-sm filter-bar align-items-center ms-3">
+            <div class="d-inline-flex shadow-sm filter-bar align-items-center">
                 <span class="small text-muted font-weight-bold mb-0 ms-2 me-2">Row density</span>
                 <button class="btn btn-sm btn-outline-secondary me-2" onclick="collapseAllRows()">
                     <i class="fas fa-compress-alt"></i> Collapse All
@@ -62,13 +68,19 @@
         </div>
     </div>
 
-    <div class="bulk-action-bar d-flex align-items-center gap-2">
-        <span class="text-muted small mr-3">Selected: <strong id="selected-count" class="text-dark">0</strong></span>
-        <button class="btn btn-sm btn-outline-secondary font-weight-bold" onclick="executeBulk('DIAGNOSTIC')"><i class="fas fa-stethoscope"></i> Diagnostics</button>
-        <button class="btn btn-sm btn-outline-danger font-weight-bold" onclick="executeBulk('REBOOT')"><i class="fas fa-power-off"></i> Reboot</button>
-        <button class="btn btn-sm btn-outline-info font-weight-bold ml-2" onclick="executeBulk('SYNC')"><i class="fas fa-cloud-upload-alt"></i> Launch Sync</button>
-        <button class="btn btn-sm btn-dark font-weight-bold ml-2" onclick="openConfigModal()"><i class="fas fa-cogs"></i> Configure</button>
-        <button class="btn btn-sm btn-primary font-weight-bold" onclick="openExperimentModal()"><i class="fas fa-flask"></i> Launch Batch Experiment</button>
+    <div class="global-commands-panel flex-shrink-0">
+        <div class="small text-muted text-uppercase font-weight-bold mb-2 px-1">Global commands</div>
+        <div class="bulk-action-bar d-flex flex-column gap-2">
+            <div class="text-muted small">Selected: <strong id="selected-count" class="text-dark">0</strong></div>
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <button class="btn btn-sm btn-outline-secondary font-weight-bold" onclick="executeBulk('DIAGNOSTIC')" title="Diagnostics"><i class="fas fa-stethoscope"></i> Diagnostics</button>
+                <button class="btn btn-sm btn-outline-danger font-weight-bold" onclick="executeBulk('REBOOT')" title="Reboot"><i class="fas fa-power-off"></i> Reboot</button>
+                <button class="btn btn-sm btn-outline-success font-weight-bold" onclick="executeBulk('UPDATE')" title="Update module software"><i class="fas fa-download"></i> Update</button>
+                <button class="btn btn-sm btn-outline-info font-weight-bold" onclick="executeBulk('SYNC')" title="Launch Sync"><i class="fas fa-cloud-upload-alt"></i> Sync</button>
+                <button class="btn btn-sm btn-dark font-weight-bold" onclick="openConfigModal()" title="Configure"><i class="fas fa-cogs"></i> Configure</button>
+                <button class="btn btn-sm btn-primary font-weight-bold" onclick="openExperimentModal()" title="Launch Batch Experiment"><i class="fas fa-flask"></i> Batch Exp</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -144,6 +156,45 @@
         } catch(e) {
             console.error("Discovery Error:", e);
             showToast(`<i class="fas fa-exclamation-triangle"></i> Failed to scan subnet.`, 'danger');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+
+    async function updateCommanderSoftware() {
+        const btn = document.getElementById('btn-commander-update');
+        const originalText = btn.innerHTML;
+        const confirmed = await asyncConfirm(
+            'Update Fleet Commander',
+            'Pull the latest code for this Fleet Commander? If new code is downloaded the service will restart.',
+            false
+        );
+        if (!confirmed) return;
+
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating...';
+        try {
+            const res = await fetch('/api/commander/update', { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            let message = data.message || 'Update failed.';
+            const detail = data.detail;
+            if (typeof detail === 'string') {
+                message = detail;
+            } else if (detail && typeof detail === 'object') {
+                if (detail.message) message = detail.message;
+                else if (Array.isArray(detail)) {
+                    message = detail.map(d => d.msg || d.message || JSON.stringify(d)).join('; ');
+                }
+            }
+            if (!res.ok) {
+                showToast(`<i class="fas fa-exclamation-triangle"></i> ${message}`, 'danger');
+                return;
+            }
+            showToast(`<i class="fas fa-check"></i> ${message}`, data.changed ? 'warning' : 'success');
+        } catch (e) {
+            console.error('Commander update error:', e);
+            showToast('<i class="fas fa-exclamation-triangle"></i> Failed to update Fleet Commander.', 'danger');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalText;

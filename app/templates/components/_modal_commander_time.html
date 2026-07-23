@@ -1,0 +1,159 @@
+<div class="modal fade" id="commanderTimeModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog">
+    <div class="modal-content shadow">
+      <div class="modal-header bg-dark text-white border-0 py-3">
+        <h5 class="modal-title"><i class="fas fa-clock"></i> Commander Time &amp; NTP</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body bg-light">
+        <div id="cmd-time-alert"></div>
+        <p class="small text-muted mb-3">
+          Current host time: <strong id="cmd-time-current">—</strong>
+          <span class="ms-2 badge bg-secondary" id="cmd-time-mode-badge">—</span>
+        </p>
+        <form id="commander-time-form">
+          <div class="mb-3">
+            <label class="small text-muted text-uppercase font-weight-bold mb-1" for="cmd-time-mode">Time Mode</label>
+            <select class="form-select form-select-sm" id="cmd-time-mode" onchange="toggleCommanderManualDate()">
+              <option value="network">Auto (NTP)</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div class="mb-3" id="cmd-ntp-server-group">
+            <label class="small text-muted text-uppercase font-weight-bold mb-1" for="cmd-ntp-server">NTP Server</label>
+            <input type="text" class="form-control form-control-sm" id="cmd-ntp-server" placeholder="pool.ntp.org">
+          </div>
+          <div class="mb-3">
+            <label class="small text-muted text-uppercase font-weight-bold mb-1" for="cmd-timezone">Timezone</label>
+            <input type="text" class="form-control form-control-sm" id="cmd-timezone" placeholder="Europe/Paris">
+          </div>
+          <div class="mb-3" id="cmd-manual-date-group" style="display: none;">
+            <label class="small text-muted text-uppercase font-weight-bold mb-1" for="cmd-manual-date">Date &amp; Time</label>
+            <input type="datetime-local" class="form-control form-control-sm" id="cmd-manual-date" step="1">
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer bg-white border-0">
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm btn-primary font-weight-bold" id="btn-cmd-time-apply" onclick="submitCommanderTime()">
+          <i class="fas fa-check"></i> Apply
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+    function formatApiDetail(detail, fallback) {
+        if (detail == null || detail === '') return fallback;
+        if (typeof detail === 'string') return detail;
+        if (typeof detail === 'object') {
+            if (detail.message) return String(detail.message);
+            if (Array.isArray(detail)) {
+                return detail.map(d => {
+                    if (typeof d === 'string') return d;
+                    if (d && (d.msg || d.message)) return d.msg || d.message;
+                    try { return JSON.stringify(d); } catch (_) { return String(d); }
+                }).join('; ');
+            }
+            try { return JSON.stringify(detail); } catch (_) { return fallback; }
+        }
+        return String(detail);
+    }
+
+    function escapeHtmlMultiline(text) {
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\n/g, '<br>');
+    }
+
+    function toggleCommanderManualDate() {
+        const mode = document.getElementById('cmd-time-mode').value;
+        const manualGroup = document.getElementById('cmd-manual-date-group');
+        const ntpGroup = document.getElementById('cmd-ntp-server-group');
+        if (manualGroup) manualGroup.style.display = mode === 'manual' ? 'block' : 'none';
+        if (ntpGroup) ntpGroup.style.display = mode === 'network' ? 'block' : 'none';
+    }
+
+    function pad2(n) { return String(n).padStart(2, '0'); }
+
+    function toDatetimeLocalValue(dateObj) {
+        return `${dateObj.getFullYear()}-${pad2(dateObj.getMonth() + 1)}-${pad2(dateObj.getDate())}`
+            + `T${pad2(dateObj.getHours())}:${pad2(dateObj.getMinutes())}:${pad2(dateObj.getSeconds())}`;
+    }
+
+    function formatDateForApi(datetimeLocal) {
+        if (!datetimeLocal) return null;
+        return datetimeLocal.replace('T', ' ').slice(0, 19);
+    }
+
+    async function openCommanderTimeModal() {
+        const alertEl = document.getElementById('cmd-time-alert');
+        if (alertEl) alertEl.innerHTML = '';
+        try {
+            const res = await fetch('/api/commander/time');
+            if (!res.ok) throw new Error('Failed to load commander time');
+            const data = await res.json();
+            document.getElementById('cmd-time-current').innerText = data.local_time || '—';
+            const badge = document.getElementById('cmd-time-mode-badge');
+            badge.innerText = data.mode === 'network' ? 'NTP' : 'Manual';
+            badge.className = data.mode === 'network' ? 'ms-2 badge bg-info' : 'ms-2 badge bg-warning text-dark';
+            document.getElementById('cmd-time-mode').value = data.mode || 'manual';
+            document.getElementById('cmd-ntp-server').value = data.ntp_server || 'pool.ntp.org';
+            document.getElementById('cmd-timezone').value = data.timezone || '';
+            document.getElementById('cmd-manual-date').value = toDatetimeLocalValue(new Date());
+            toggleCommanderManualDate();
+            const modal = new bootstrap.Modal(document.getElementById('commanderTimeModal'));
+            modal.show();
+        } catch (e) {
+            console.error(e);
+            showToast('<i class="fas fa-exclamation-triangle"></i> Could not load commander time settings.', 'danger');
+        }
+    }
+
+    async function submitCommanderTime() {
+        const btn = document.getElementById('btn-cmd-time-apply');
+        const alertEl = document.getElementById('cmd-time-alert');
+        const mode = document.getElementById('cmd-time-mode').value;
+        const payload = {
+            mode,
+            timezone: document.getElementById('cmd-timezone').value.trim() || null,
+            ntp_server: document.getElementById('cmd-ntp-server').value.trim() || null,
+        };
+        if (mode === 'manual') {
+            payload.date = formatDateForApi(document.getElementById('cmd-manual-date').value);
+            if (!payload.date) {
+                alertEl.innerHTML = '<div class="alert alert-warning py-2 small">Please set a date and time.</div>';
+                return;
+            }
+        }
+
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Applying...';
+        try {
+            const res = await fetch('/api/commander/time', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                const msg = formatApiDetail(data.detail, data.message || 'Failed to apply time settings.');
+                alertEl.innerHTML = `<div class="alert alert-danger py-2 small">${escapeHtmlMultiline(msg)}</div>`;
+                return;
+            }
+            showToast(`<i class="fas fa-check"></i> ${data.message || 'Commander time updated.'}`, 'success');
+            bootstrap.Modal.getInstance(document.getElementById('commanderTimeModal'))?.hide();
+            if (typeof fetchFleetData === 'function') fetchFleetData();
+        } catch (e) {
+            console.error(e);
+            alertEl.innerHTML = '<div class="alert alert-danger py-2 small">Request failed.</div>';
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+</script>

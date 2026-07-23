@@ -12,7 +12,9 @@ Central orchestration hub for the [ChronoRoot](https://chronoroot.github.io/) au
 * **Zero-touch reverse proxy:** Access any edge node's native web UI through the dashboard. FastAPI middleware tunnels traffic (including static assets and video streams) without modifying edge software.
 * **Global batch orchestration:** Launch synchronized time-lapse experiments with strict pre-flight checks for storage, camera availability, and schedule conflicts.
 * **Autonomous time synchronization:** Detects clock drift on manual-time nodes and pushes master time to align phenotyping timestamps.
-* **Bulk fleet management:** Push SFTP/FTP/Rclone configs, trigger background transfers, run diagnostics, or send mass reboot commands to selected modules.
+* **Bulk fleet management:** Push SFTP/FTP/Rclone configs, trigger background transfers, run diagnostics, mass reboot, or batch **software updates** (`git pull` on modules).
+* **Commander self-service:** Update the Fleet Commander itself via git pull, and change the host NTP server or manual clock from the dashboard (buttons next to **Discover Nodes**).
+* **Offline UI assets:** Bootstrap 5 and Font Awesome are vendored under `app/static/vendor/` so the dashboard works on isolated networks without CDN access.
 
 ## Technology Stack
 
@@ -80,6 +82,25 @@ chmod +x setup.sh
 
 Access the dashboard at `http://<pi-ip>/`.
 
+The systemd unit created by `setup.sh` runs as the installing user (not root). Its `PATH` must include both the project venv **and** system binaries (`/usr/bin`, …) so `git`, `sudo`, and `timedatectl` resolve. New installs get this automatically; existing units that only set `PATH=…/venv/bin` should be updated and the service restarted:
+
+```bash
+sudo systemctl edit --full fleetcontrol
+# set:
+# Environment="PATH=/srv/ChronoRootFleet/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+sudo systemctl restart fleetcontrol
+```
+
+Commander time/NTP and post-update restarts use `sudo -n` for `timedatectl`, `date`, `sed`, and `systemctl`. Grant passwordless sudo for those commands to the service user (same pattern as ChronoRootControl modules), or run the unit as root.
+
+#### Offline UI assets
+
+Bootstrap 5.3 and Font Awesome 5.15.4 ship under `app/static/vendor/`. To refresh them on a machine with internet before deploying to an isolated Pi:
+
+```bash
+./scripts/vendor_assets.sh
+```
+
 #### Manual bare-metal install
 
 ```bash
@@ -97,7 +118,14 @@ Create `/etc/systemd/system/fleetcontrol.service` pointing `WorkingDirectory` an
 
 ### Fleet operations (triage)
 
-The home page lists all registered modules. Storage warnings, camera faults, and connectivity issues are surfaced automatically. Use bulk actions to sync time, push configs, or reboot selected nodes.
+The home page lists all registered modules. Storage warnings, camera faults, and connectivity issues are surfaced automatically. Use bulk actions to sync time, push configs, update module software, or reboot selected nodes.
+
+Next to **Discover Nodes**:
+
+* **Update Software** — `git pull` on the Fleet Commander install directory; restarts `fleetcontrol` if code changed.
+* **Commander Time** — set NTP server (network mode) or a manual date/time on the commander host.
+
+After upgrading, click **Discover** once so each module’s `USE_NTP` flag is copied into the fleet database (fixes System Clock badges that previously always showed NTP).
 
 ### Discovering new modules
 
@@ -123,7 +151,10 @@ Click **Remote View** on any online module to tunnel into its native UI through 
 | `GET /api/fleet/diagnostics` | Poll monitor health and error breakdown |
 | `POST /api/fleet/discover` | Full subnet discovery sweep |
 | `POST /api/fleet/experiment/launch` | Launch a global batch experiment |
-| `POST /api/fleet/bulk/*` | Bulk reboot, diagnostic, config, sync, time |
+| `POST /api/fleet/bulk/*` | Bulk reboot, diagnostic, config, sync, time, software update |
+| `POST /api/commander/update` | `git pull` on the Fleet Commander; restart if changed |
+| `GET /api/commander/time` | Commander host clock / NTP snapshot |
+| `POST /api/commander/time` | Set commander NTP or manual time |
 | `GET /api/fleet/db/experiments` | Historical batch data |
 | `GET /proxy/{mac}/{path}` | Reverse proxy to edge node UI |
 
@@ -147,6 +178,8 @@ Full interactive docs are available at `/docs` when the server is running.
 | `FLEET_USE_LIVENESS_PROBE` | off | Short `/api/status` probe before full fetch |
 | `FLEET_DISCOVERY_MAX_CONCURRENT` | `32` | Max parallel requests during discovery |
 | `FLEET_PROXY_DB_FALLBACK_MINUTES` | `5` | Use last-known IP for proxy when offline |
+| `FLEET_REPO_DIR` | auto (parent of `app/`) | Install directory for commander `git pull` |
+| `FLEET_SERVICE_NAME` | `fleetcontrol` | systemd unit restarted after commander update |
 
 Legacy: `FLEET_POLL_BATCH_SIZE` is an alias for `FLEET_MAX_CONCURRENT_POLLS` if the latter is unset.
 
@@ -157,12 +190,14 @@ When modules flap yellow or offline, check `GET /api/fleet/diagnostics` for `mod
 ```text
 ChronoRootFleet/
 ├── app/
-│   ├── core/                 # In-memory state, poll sweeper, UI transformers
+│   ├── core/                 # In-memory state, poll sweeper, UI transformers, host ops
 │   ├── doc/                  # Architecture and about markdown (rendered in /about)
 │   ├── routers/              # API routes, views, reverse proxy
+│   ├── static/vendor/        # Offline Bootstrap 5 + Font Awesome
 │   ├── templates/            # Jinja2 dashboards and components
 │   ├── database.py           # SQLModel schema (RobotModule, ExperimentalBatch, ExperimentRun)
 │   └── main.py               # FastAPI app, lifespan, proxy middleware
+├── scripts/vendor_assets.sh  # Re-download offline CSS/JS vendors
 ├── setup.sh                  # Bare-metal installer (systemd + NGINX)
 ├── docker-compose.yml
 ├── Dockerfile
