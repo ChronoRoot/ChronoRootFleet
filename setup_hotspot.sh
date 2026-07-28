@@ -92,20 +92,29 @@ sudo systemctl enable dnsmasq hostapd
 sudo systemctl start wlan0-ip dnsmasq hostapd
 
 # 5. Configure NAT Routing, Firewall & SSH
-echo "[5/8] Configuring NAT routing, Firewall, and SSH..."
-ETH_IF=$(ip route | grep default | awk '{print $5}' | head -n 1)
+echo "[5/8] Configuring Dynamic NAT routing, Firewall, and SSH..."
 
-if [ -n "$ETH_IF" ]; then
-    echo "      > Routing internet from: $ETH_IF to wlan0"
-    sudo iptables -t nat -A POSTROUTING -o "$ETH_IF" -j MASQUERADE
-    sudo iptables -A FORWARD -i "$ETH_IF" -o wlan0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-    sudo iptables -A FORWARD -i wlan0 -o "$ETH_IF" -j ACCEPT
-else
-    echo "      > No default internet interface found right now. Skipping NAT."
-fi
+# Clear out any existing rules to prevent duplicates during reinstall
+sudo iptables -t nat -F POSTROUTING
+sudo iptables -F FORWARD
 
+# 1. Masquerade outbound traffic dynamically (interface-agnostic)
+# Takes any traffic from the fleet subnet and routes it out of any active WAN
+sudo iptables -t nat -A POSTROUTING -s 192.168.50.0/24 ! -o wlan0 -j MASQUERADE
+
+# 2. Forwarding: Allow connected modules to send traffic out to the internet
+sudo iptables -A FORWARD -i wlan0 -j ACCEPT
+
+# 3. Forwarding: Allow returning internet traffic back to the modules
+sudo iptables -A FORWARD -o wlan0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# 4. Input: Allow modules to access Fleet Commander and SSH on the Pi itself
 sudo iptables -I INPUT -i wlan0 -p tcp --dport 80 -j ACCEPT
 sudo iptables -I INPUT -i wlan0 -p tcp --dport 22 -j ACCEPT
+
+# 5. Input: Allow DNS and DHCP requests to the Pi (Best practice if default policies ever change)
+sudo iptables -I INPUT -i wlan0 -p udp --dport 53 -j ACCEPT
+sudo iptables -I INPUT -i wlan0 -p udp --dport 67:68 -j ACCEPT
 
 # Save iptables rules persistently so they survive a reboot
 sudo netfilter-persistent save
