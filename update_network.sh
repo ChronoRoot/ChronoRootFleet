@@ -74,7 +74,11 @@ fi
 
 # 4. Update Systemd wlan0 IP assignment
 echo "> Updating wlan0 static IP..."
-sudo sed -i "s|ExecStart=/sbin/ip addr add .* dev wlan0|ExecStart=/sbin/ip addr add $PI_IP/24 dev wlan0|" /etc/systemd/system/wlan0-ip.service
+# Using 'replace' instead of 'add' prevents crashes if the IP is already assigned during a restart
+sudo sed -i "s|^ExecStart=/sbin/ip addr.*|ExecStart=/sbin/ip addr replace $PI_IP/24 dev wlan0|" /etc/systemd/system/wlan0-ip.service
+
+# Flush the interface IP just to guarantee a clean slate before restart
+sudo ip addr flush dev wlan0
 
 # 5. Update dnsmasq (DHCP & Local DNS)
 echo "> Updating DHCP pool and local DNS..."

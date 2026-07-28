@@ -108,6 +108,49 @@ chmod +x setup_hotspot.sh
 - SSH is enabled on port 22 on the AP interface.
 - If no default route exists at install time, NAT is skipped until an uplink appears (re-run NAT rules or reconnect Ethernet and refresh iptables as needed).
 
+### Reconfiguring the Hotspot (`update_network.sh`)
+
+If you installed the Fleet Commander using **Option B (Hotspot + share)**, you may eventually need to change the network's IP address, SSID, or password. 
+
+Instead of manually editing systemd, dnsmasq, hostapd, and iptables files, you can use the included reconfiguration script. This script dynamically recalculates your subnet, updates all routing rules, updates the `FLEET_TARGET_SUBNET` for the Discovery tool, and restarts the necessary background services safely.
+
+Run the script from the repository root:
+
+```bash
+sudo ./update_network.sh [options]
+
+```
+
+**Available Flags:**
+
+* `-i <ip_address>` : Set the Gateway IP (Default: `192.168.50.1`). This automatically calculates the new `/24` subnet and DHCP pool.
+* `-s <ssid>`       : Change the Wi-Fi SSID.
+* `-p <password>`   : Change the Wi-Fi Password (must be 8+ characters).
+* `-h`              : Make the Wi-Fi network hidden (stops broadcasting SSID).
+
+#### Common Scenarios
+
+**1. Deploying a second Fleet Commander in the same lab:**
+To prevent routing conflicts with the default `192.168.50.1` subnet on your university/lab network, move the second Pi to a new subnet and rename its SSID:
+
+```bash
+sudo ./update_network.sh -i 192.168.60.1 -s "ChronoRoot_RoomB"
+```
+
+**2. Securing and hiding the network:**
+Keep the default IP, but change the password and hide the network from student devices:
+
+```bash
+sudo ./update_network.sh -p "NewComplexPass123!" -h
+```
+
+**3. Reset to defaults:**
+If your network configuration gets messy, restore the documented baseline:
+
+```bash
+sudo ./update_network.sh -i 192.168.50.1 -s "ChronoRootWifi" -p "chronoroot"
+```
+
 ### Option C: Docker (PC / Server)
 
 ```bash
@@ -133,11 +176,7 @@ sudo systemctl restart fleetcontrol
 
 Commander time/NTP and post-update restarts use `sudo -n` for `timedatectl`, `date`, `sed`, and `systemctl`. Grant passwordless sudo for those commands to the service user (same pattern as ChronoRootControl modules), or run the unit as root.
 
-Bootstrap 5.3 and Font Awesome 5.15.4 ship under `app/static/vendor/`. To refresh them on a machine with internet before deploying to an isolated Pi:
-
-```bash
-./scripts/vendor_assets.sh
-```
+Bootstrap 5.3 and Font Awesome 5.15.4 ship under `app/static/vendor/`. 
 
 #### Manual bare-metal install
 
