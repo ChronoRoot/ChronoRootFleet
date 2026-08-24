@@ -23,7 +23,7 @@
 
 <div class="d-flex justify-content-between align-items-start mb-3 gap-3 fleet-toolbar">
     <div class="fleet-toolbar-half d-flex flex-column">
-        <div class="d-flex shadow-sm filter-bar align-items-center flex-wrap">
+        <div class="d-flex align-items-center gap-2 filter-chip-row">
             <button class="btn btn-sm btn-filter active" onclick="filterView('ALL', this)">All <span id="count-ALL" class="badge bg-secondary text-white ms-1 rounded-pill">0</span></button>
             <button class="btn btn-sm btn-filter" onclick="filterView('RUNNING', this)">Running <span id="count-RUNNING" class="badge bg-primary text-white ms-1 rounded-pill">0</span></button>
             <button class="btn btn-sm btn-filter" onclick="filterView('IDLE', this)">Standby <span id="count-IDLE" class="badge bg-light text-dark border ms-1 rounded-pill">0</span></button>
@@ -33,43 +33,42 @@
                 <i class="fas fa-exclamation-circle"></i> Needs Attention <span id="count-ATTENTION" class="badge bg-danger text-white ms-1 rounded-pill">0</span>
             </button>
             
-            <div class="form-check form-switch ms-3 border-start ps-4 py-1">
+            <div class="form-check form-switch py-1 hide-offline-toggle">
                 <input class="form-check-input" type="checkbox" id="hideOfflineToggle" onchange="fetchFleetData()">
                 <label class="form-check-label small text-muted font-weight-bold mt-1" for="hideOfflineToggle" style="cursor: pointer;">Hide Offline</label>
             </div>
         </div>
 
         <div class="d-flex align-items-center mt-2 flex-wrap gap-2">
-            <div class="d-inline-flex shadow-sm filter-bar align-items-center">
-            <label for="sortKeySelect" class="small text-muted font-weight-bold mb-0 ms-2 me-2">Sort</label>
-            <select id="sortKeySelect" class="form-select form-select-sm me-2" style="min-width: 145px;" onchange="onSortChanged()">
+            <div class="d-inline-flex shadow-sm filter-bar align-items-center sort-search-group">
+            <label for="sortKeySelect" class="small text-muted font-weight-bold mb-0">Sort</label>
+            <select id="sortKeySelect" class="form-select form-select-sm" onchange="onSortChanged()">
                 <option value="MODULE_ID">Module ID</option>
                 <option value="LOCATION">Location</option>
             </select>
-            <button id="sortDirBtn" class="btn btn-sm btn-outline-secondary me-2" onclick="toggleSortDirection()" title="Toggle ascending/descending">
+            <button id="sortDirBtn" class="btn btn-sm btn-outline-secondary" onclick="toggleSortDirection()" title="Toggle ascending/descending">
                 <i class="fas fa-sort-alpha-down"></i>
             </button>
 
-            <label for="descSearchInput" class="small text-muted font-weight-bold mb-0 me-2">Search</label>
+            <label for="descSearchInput" class="small text-muted font-weight-bold mb-0">Search</label>
             <input
                 id="descSearchInput"
                 type="text"
-                class="form-control form-control-sm me-2"
-                style="min-width: 160px;"
+                class="form-control form-control-sm"
                 placeholder="Name or description"
                 oninput="onDescriptionSearchInput()"
             >
-            <button id="descSearchClearBtn" class="btn btn-sm btn-outline-secondary me-2" onclick="clearDescriptionSearch()" title="Clear search">
+            <button id="descSearchClearBtn" class="btn btn-sm btn-outline-secondary" onclick="clearDescriptionSearch()" title="Clear search">
                 <i class="fas fa-times"></i>
             </button>
             </div>
 
-            <div class="d-inline-flex shadow-sm filter-bar align-items-center">
-                <span class="small text-muted font-weight-bold mb-0 ms-2 me-2">Row density</span>
-                <button class="btn btn-sm btn-outline-secondary me-2" onclick="collapseAllRows()">
+            <div class="d-inline-flex shadow-sm filter-bar align-items-center row-density-group">
+                <span class="small text-muted font-weight-bold mb-0">Row density</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="collapseAllRows()">
                     <i class="fas fa-compress-alt"></i> Collapse All
                 </button>
-                <button class="btn btn-sm btn-outline-secondary me-2" onclick="expandAllRows()">
+                <button class="btn btn-sm btn-outline-secondary" onclick="expandAllRows()">
                     <i class="fas fa-expand-alt"></i> Expand All
                 </button>
             </div>

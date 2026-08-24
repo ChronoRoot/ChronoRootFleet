@@ -7,15 +7,24 @@
     .table-dense th, .table-dense td { padding: 0.8rem 1rem; vertical-align: middle; border-top: 1px solid #eaecf4; }
     .node-row { background-color: #fafbfc; border-left: 3px solid #4e73df; }
     .btn-delete-batch { z-index: 10; position: relative; }
+
+    /* Keep the node row's blue accent border once it becomes a stacked card on
+       narrow screens (the shared .table-responsive-cards rule sets all 4 border
+       sides, so re-assert just the left one here). */
+    @media (max-width: 991.98px) {
+        .table-responsive-cards tbody tr.node-row {
+            border-left: 3px solid #4e73df;
+        }
+    }
 </style>
 
 <div class="container-fluid py-4 px-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
         <div>
             <h2 class="font-weight-bold mb-0"><i class="fas fa-flask text-primary"></i> Experiment Status</h2>
             <small class="text-muted">Experimental batches and historical biological runs.</small>
         </div>
-        <div class="d-flex gap-2">
+        <div class="d-flex flex-wrap gap-2">
             <button class="btn btn-outline-secondary font-weight-bold shadow-sm" onclick="loadExperiments()">
                 <i class="fas fa-sync-alt"></i> Refresh Data
             </button>
@@ -29,7 +38,7 @@
     </div>
 
     <div class="card shadow-sm border-0 rounded overflow-hidden">
-        <div class="card-header bg-white py-3 border-bottom">
+        <div class="card-header bg-white py-3 border-bottom d-none d-md-block">
             <div class="row font-weight-bold text-muted text-uppercase small" style="letter-spacing: 0.5px;">
                 <div class="col-4">Experimental Batch Name</div>
                 <div class="col-2">Launch Date</div>
@@ -104,17 +113,17 @@
 
                     nodeRows += `
                         <tr class="node-row small">
-                            <td class="pl-4 font-weight-bold text-dark w-25">
+                            <td class="pl-4 font-weight-bold text-dark w-25" data-label="Node">
                                 <i class="fas fa-server text-muted mr-1"></i> ${node.hostname} 
                                 <span class="text-secondary font-weight-normal font-italic ml-2" style="font-size: 0.70rem;">(${node.mac})</span>
                                 ${msgHtml}
                             </td>
-                            <td class="text-muted w-25"><i class="far fa-clock"></i> ${timeLine}</td>
-                            <td class="font-weight-bold ${n_col} w-15">${node.status}</td>
-                            <td class="w-20">${node.taken} / ${node.expected} imgs 
+                            <td class="text-muted w-25" data-label="Timeline"><i class="far fa-clock"></i> ${timeLine}</td>
+                            <td class="font-weight-bold ${n_col} w-15" data-label="Status">${node.status}</td>
+                            <td class="w-20" data-label="Progress">${node.taken} / ${node.expected} imgs 
                                 <span class="${node.missed > 0 ? 'text-danger font-weight-bold ml-2' : 'text-muted ml-2'}">${node.missed > 0 ? `(${node.missed} lost)` : ''}</span>
                             </td>
-                            <td class="text-right pr-4 w-15">${nativeLink}</td>
+                            <td class="text-right pr-4 w-15" data-label="Remote">${nativeLink}</td>
                         </tr>
                     `;
                 });
@@ -127,18 +136,18 @@
                 <div class="accordion-item border-bottom">
                     <h2 class="accordion-header" id="heading${batch.id}">
                         <button class="accordion-button ${isCollapsed} batch-header bg-white" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
-                            <div class="row w-100 align-items-center">
-                                <div class="col-4 font-weight-bold text-dark"><i class="fas fa-layer-group text-muted mr-2"></i> ${batch.name}</div>
-                                <div class="col-2 text-muted small">${batch.launched_at}</div>
-                                <div class="col-3">
+                            <div class="row w-100 align-items-center gy-2">
+                                <div class="col-12 col-md-4 font-weight-bold text-dark text-truncate"><i class="fas fa-layer-group text-muted mr-2"></i> ${batch.name}</div>
+                                <div class="col-6 col-md-2 order-md-2 text-muted small">${batch.launched_at}</div>
+                                <div class="col-6 col-md-2 order-md-4"><span class="badge ${badgeClass} text-white">${batch.global_status}</span></div>
+                                <div class="col-12 col-md-3 order-md-3">
                                     <div class="d-flex justify-content-between small mb-1">
                                         <span>${p.taken}/${p.expected} <span class="text-danger ml-1">${p.missed > 0 ? `(${p.missed} lost)` : ''}</span></span>
                                         <span class="font-weight-bold">${pct}%</span>
                                     </div>
                                     <div class="progress" style="height: 6px;"><div class="progress-bar ${badgeClass}" style="width: ${pct}%;"></div></div>
                                 </div>
-                                <div class="col-2"><span class="badge ${badgeClass} text-white">${batch.global_status}</span></div>
-                                <div class="col-1 text-right">
+                                <div class="col-12 col-md-1 order-md-5 text-md-end">
                                     <span class="btn btn-sm btn-outline-danger btn-delete-batch" onclick="deletebatch(event, ${batch.id}, '${batch.name}')"><i class="fas fa-trash"></i></span>
                                 </div>
                             </div>
@@ -146,7 +155,7 @@
                     </h2>
                     <div id="${collapseId}" class="accordion-collapse collapse ${isOpen}" data-bs-parent="#batchAccordion">
                         <div class="accordion-body p-0">
-                            <table class="table table-sm table-dense mb-0"><tbody>${nodeRows}</tbody></table>
+                            <table class="table table-sm table-dense table-responsive-cards mb-0"><tbody>${nodeRows}</tbody></table>
                         </div>
                     </div>
                 </div>

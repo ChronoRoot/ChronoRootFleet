@@ -70,6 +70,86 @@
         }
         .nav-link:hover { color: #fff !important; }
         .nav-link.active { color: #4e73df !important; } /* Modern SaaS Blue */
+
+        /* ==========================================
+           5. GLOBAL TOAST (responsive)
+           ========================================== */
+        #appToast {
+            width: min(92vw, 420px);
+        }
+
+        /* ==========================================
+           6. RESPONSIVE "CARD" TABLE (shared across pages)
+           Below 992px, tables using .table-responsive-cards stop behaving like
+           tables and reflow as a stack of bordered cards - one per row - so
+           nothing ever needs to scroll horizontally. Each cell gets a small
+           uppercase label (from its data-label attribute) so it still reads
+           clearly once it's no longer under a column header.
+           ========================================== */
+        @media (max-width: 991.98px) {
+            .table-responsive-cards, .table-responsive-cards tbody, .table-responsive-cards tr, .table-responsive-cards td {
+                display: block;
+                width: 100% !important;
+            }
+            .table-responsive-cards thead {
+                display: block;
+            }
+            .table-responsive-cards thead tr {
+                display: flex;
+                align-items: center;
+                padding: 0.6rem 1rem;
+                border-bottom: 1px solid #eaecf4;
+            }
+            .table-responsive-cards tbody {
+                display: block;
+                padding: 0.85rem 0.75rem;
+            }
+            .table-responsive-cards thead th {
+                display: none;
+            }
+            .table-responsive-cards thead th:first-child {
+                display: block;
+                border: none;
+                padding: 0;
+            }
+            .table-responsive-cards thead th:first-child::after {
+                content: "Select All";
+                margin-left: 0.6rem;
+                text-transform: none;
+                font-size: 0.85rem;
+                font-weight: 700;
+                color: #5a5c69;
+            }
+            .table-responsive-cards tbody tr {
+                border: 1px solid #eaecf4;
+                border-radius: 0.75rem;
+                margin: 0 0 0.85rem 0;
+                box-shadow: 0 0.1rem 0.5rem rgba(58, 59, 69, 0.06);
+                overflow: hidden;
+            }
+            .table-responsive-cards tbody tr:last-child { margin-bottom: 0; }
+            .table-responsive-cards tbody td {
+                border-top: none !important;
+                border-bottom: 1px solid #f1f3f9;
+                padding: 0.75rem 1rem !important;
+            }
+            .table-responsive-cards tbody td:last-child { border-bottom: none; }
+            .table-responsive-cards tbody td:first-child:not([colspan]):not([data-label]) {
+                display: flex;
+                align-items: center;
+                background-color: #f8f9fc;
+            }
+            .table-responsive-cards tbody td[data-label]::before {
+                content: attr(data-label);
+                display: block;
+                text-transform: uppercase;
+                font-size: 0.68rem;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                color: #858796;
+                margin-bottom: 0.35rem;
+            }
+        }
     </style>
 </head>
 <body>

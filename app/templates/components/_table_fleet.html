@@ -1,5 +1,5 @@
 <div class="bg-white border rounded shadow-sm overflow-hidden">
-    <table class="table table-dense mb-0 w-100">
+    <table class="table table-dense table-fleet table-responsive-cards mb-0 w-100">
         <thead>
             <tr>
                 <th width="3%" class="text-center"><input type="checkbox" id="selectAll" onclick="toggleAll(this)"></th>
@@ -16,13 +16,13 @@
 </div>
 
 <div class="modal fade" id="proxyModal" tabindex="-1" data-bs-backdrop="static">
-  <div class="modal-dialog modal-xl" style="height: 90vh;">
-    <div class="modal-content shadow" style="height: 100%;">
+  <div class="modal-dialog modal-xl modal-fullscreen-sm-down proxy-modal-dialog">
+    <div class="modal-content shadow h-100">
       <div class="modal-header bg-dark text-white border-0 py-2">
         <h5 class="modal-title"><i class="fas fa-desktop"></i> Remote View: <span id="proxy-hostname" class="text-info"></span></h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="closeProxy()"></button>
       </div>
-      <div class="modal-body p-0 bg-light" style="height: 100%;">
+      <div class="modal-body p-0 bg-light h-100">
         <div id="proxy-spinner" class="text-center py-5 text-muted">
             <i class="fas fa-spinner fa-spin fa-2x mb-3"></i><br>Tunneling to Edge Node...
         </div>
@@ -396,7 +396,7 @@
         return `
             <tr class="row-hover" style="opacity: 0.6; background-color: #f8f9fa;">
                 <td class="text-center">${checkboxHtml}</td>
-                <td>
+                <td data-label="Identity">
                     <div class="d-flex align-items-start justify-content-between gap-2 mb-1">
                         <div class="font-weight-bold text-dark text-truncate" style="font-size: 1.05rem; cursor: pointer;"
                             onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
@@ -409,8 +409,8 @@
                     <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;"><i class="fas fa-network-wired"></i> IP: ${node.ip}</div>
                     <div class="text-muted small mt-1">Last seen: ${node.last_seen || 'Unknown'}</div>
                 </td>
-                <td colspan="2" class="text-muted small font-italic align-middle">Module offline</td>
-                <td>
+                <td colspan="2" class="text-muted small font-italic align-middle" data-label="Status">Module offline</td>
+                <td data-label="Actions">
                     <button onclick="removeModuleFromFleet('${node.mac}', '${safeHost}')" class="btn btn-sm btn-outline-secondary w-100 justify-content-start">
                         <div style="width: 24px; text-align: center;"><i class="fas fa-trash-alt"></i></div> Remove from Fleet
                     </button>
@@ -420,10 +420,11 @@
 
     function renderOfflineRowCollapsed(node, checkboxHtml) {
         const desc = node.description ? node.description : '<span style="opacity:0.5; font-style: italic;">No location set...</span>';
+        const safeHost = (node.hostname || '').replace(/'/g, "\\'");
         return `
             <tr class="row-hover" style="opacity: 0.85;">
                 <td class="text-center">${checkboxHtml}</td>
-                <td>
+                <td data-label="Identity">
                     <div class="d-flex align-items-start justify-content-between gap-2">
                         <div class="font-weight-bold text-dark text-truncate" style="font-size: 0.96rem;">
                             ${node.hostname}
@@ -433,13 +434,13 @@
                     <div class="text-muted small text-truncate">${desc}</div>
                     <div class="text-muted" style="font-family: monospace; font-size: 0.72rem;">${node.mac} | ${node.ip}</div>
                 </td>
-                <td style="width: 20%;">
+                <td style="width: 20%;" data-label="Experiment Status">
                     <span class="badge bg-secondary">OFFLINE</span>
                 </td>
-                <td><div class="text-muted small">Offline module</div></td>
-                <td>
-                    <button onclick="window.location.href = '/remote/${node.mac}'" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start">
-                        <div style="width: 24px; text-align: center;"><i class="fas fa-desktop"></i></div> Remote View
+                <td data-label="Hardware &amp; State"><div class="text-muted small">Module offline</div></td>
+                <td data-label="Node Actions">
+                    <button onclick="removeModuleFromFleet('${node.mac}', '${safeHost}')" class="btn btn-sm btn-outline-secondary w-100 justify-content-start">
+                        <div style="width: 24px; text-align: center;"><i class="fas fa-trash-alt"></i></div> Remove from Fleet
                     </button>
                 </td>
             </tr>`;
@@ -547,7 +548,7 @@
         return `
             <tr class="row-hover${node.telemetry_stale ? ' table-warning' : ''}">
                 <td class="text-center">${checkboxHtml}</td>
-                <td>
+                <td data-label="Identity">
                     <div class="d-flex align-items-start justify-content-between gap-2 mb-1">
                         <div class="font-weight-bold text-dark text-truncate" style="font-size: 1.05rem; cursor: pointer;"
                             onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
@@ -560,8 +561,8 @@
                     <div class="text-muted hw-detail" style="font-family: monospace; font-size: 0.75rem;"><i class="fas fa-network-wired"></i> IP: ${node.ip}</div>
                     ${staleBadge}
                 </td>
-                <td>${jobHtml}</td>
-                <td>
+                <td data-label="Experiment Status">${jobHtml}</td>
+                <td data-label="Hardware &amp; State">
                     <div class="row hw-detail" style="font-size: 0.85rem;">
                         <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">Cameras</div>${renderCameraCellSummary(node, jobDetail)}</div>
                         <div class="col-6 mb-2"><div class="text-muted small text-uppercase" style="font-size: 0.65rem;">Hardware</div><div class="text-primary font-weight-bold"><i class="fas fa-microchip"></i> ${node.hardware_desc || 'Unknown'}</div></div>
@@ -582,7 +583,7 @@
                         </div>
                     </div>
                 </td>
-                <td>
+                <td data-label="Node Actions">
                     <div class="d-flex flex-column gap-2">
                         <button onclick="window.location.href = '/remote/${node.mac}'" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start"><div style="width: 24px; text-align: center;"><i class="fas fa-desktop"></i></div> Remote View</button>
                         <button onclick="runSingleDiagnostic('${node.mac}', '${safeHost}')" class="btn btn-sm btn-light border shadow-sm text-warning w-100 justify-content-start"><div style="width: 24px; text-align: center;"><i class="fas fa-stethoscope"></i></div> Diagnostic</button>
@@ -623,7 +624,7 @@
         return `
             <tr class="row-hover${node.telemetry_stale ? ' table-warning' : ''}">
                 <td class="text-center">${checkboxHtml}</td>
-                <td>
+                <td data-label="Identity">
                     <div class="d-flex align-items-start justify-content-between gap-2">
                         <div class="font-weight-bold text-dark text-truncate" style="font-size: 0.98rem; cursor: pointer;"
                             onclick="openIdentityModal('${node.mac}', '${safeHost}', '${node.description || ''}')" title="Click to edit identity">
@@ -634,7 +635,7 @@
                     <div class="text-muted small text-truncate">${desc}</div>
                     <div class="text-muted" style="font-family: monospace; font-size: 0.72rem;">${node.mac} | ${node.ip}</div>
                 </td>
-                <td style="width: 20%;">
+                <td style="width: 20%;" data-label="Experiment Status">
                     <div class="d-flex flex-column align-items-start gap-1">
                         <div class="d-flex align-items-center gap-1 flex-wrap">
                             <span class="text-muted small text-truncate" title="${jobLabel}" style="max-width: 130px;">${jobLabel}</span>
@@ -644,7 +645,7 @@
                         <span class="text-muted small text-truncate" style="max-width: 260px;" title="${jobLine}">${jobLine}</span>
                     </div>
                 </td>
-                <td>
+                <td data-label="Hardware &amp; State">
                     <div class="d-flex flex-wrap gap-1 align-items-center">
                         <span class="badge ${camsClass}">${node.cams_ok}/${node.cams_total} Cams</span>
                         <span class="badge ${storageClass}">${node.storage_pct}% Storage</span>
@@ -653,7 +654,7 @@
                         ${attentionBadge}
                     </div>
                 </td>
-                <td>
+                <td data-label="Node Actions">
                     <button onclick="window.location.href = '/remote/${node.mac}'" class="btn btn-sm btn-light border shadow-sm text-primary w-100 justify-content-start">
                         <div style="width: 24px; text-align: center;"><i class="fas fa-desktop"></i></div> Remote View
                     </button>
