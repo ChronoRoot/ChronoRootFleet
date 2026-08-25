@@ -125,6 +125,7 @@
     let descriptionSearchDebounce = null;
     let collapsedRows = new Set();
     let lastFleetNodeMacs = [];
+    let lastFleetNodes = [];
 </script>
 
 <div class="container-fluid py-4 px-4">
@@ -139,5 +140,6 @@
 {% include 'components/_modal_config.html' %}
 {% include 'components/_modal_commander_time.html' %}
 {% include 'components/_modal_commander_network.html' %}
+{% include 'components/_modal_module_update.html' %}
 
 {% endblock %}

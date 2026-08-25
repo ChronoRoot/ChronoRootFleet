@@ -1,6 +1,8 @@
 # app/routers/api_fleet.py
 import asyncio
 import httpx
+import secrets
+import time
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -25,6 +27,13 @@ router = APIRouter(prefix="/api/fleet", tags=["Fleet Orchestration"])
 # --- VALIDATION MODELS ---
 class BulkActionRequest(BaseModel):
     target_macs: List[str]
+
+class BulkUpdateRequest(BulkActionRequest):
+    force: bool = False
+    authorization_token: Optional[str] = None
+
+class AuthorizedModuleActionRequest(BulkActionRequest):
+    authorization_token: str
 
 class BulkTimeSyncRequest(BulkActionRequest):
     mode: str = Field(default="network", pattern="^(network|manual)$")
@@ -72,10 +81,10 @@ async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_pa
                 return {"mac": mac, "status": "error", "message": "Offline"}
 
             node_state = LIVE_FLEET_STATE[norm_mac]
-            ip = node_state["identity"]["ip"]
-            payload = get_payload_fn(mac, node_state) if get_payload_fn else None
             
             try:
+                ip = node_state["identity"]["ip"]
+                payload = get_payload_fn(mac, node_state) if get_payload_fn else None
                 req_kwargs = {"timeout": timeout}
                 if payload is not None:
                     req_kwargs["json"] = payload
@@ -94,7 +103,12 @@ async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_pa
                 except Exception:
                     resp_data = {"text": res.text}
 
-                return {"mac": mac, "status": "success", "data": resp_data}
+                return {
+                    "mac": mac,
+                    "status": "success",
+                    "http_status": res.status_code,
+                    "data": resp_data,
+                }
             except httpx.HTTPStatusError as e:
                 try:
                     resp_data = e.response.json() if e.response.content else {}
@@ -108,11 +122,17 @@ async def broadcast_to_nodes(macs: List[str], method: str, endpoint: str, get_pa
                 return {
                     "mac": mac,
                     "status": "error",
+                    "http_status": e.response.status_code,
                     "message": message,
                     "data": resp_data,
                 }
             except Exception as e:
-                return {"mac": mac, "status": "error", "message": str(e)}
+                return {
+                    "mac": mac,
+                    "status": "error",
+                    "error_type": type(e).__name__,
+                    "message": str(e),
+                }
             
         return await asyncio.gather(*[call_node(m) for m in macs])
     finally:
@@ -168,53 +188,320 @@ async def bulk_reboot(req: BulkActionRequest):
     return {"status": "complete", "results": results}
 
 
-@router.post("/bulk/update")
-async def bulk_software_update(req: BulkActionRequest):
-    """Pull latest ChronoRootControl code on selected modules; restart when changed."""
-    results = await broadcast_to_nodes(req.target_macs, "POST", "update", timeout=130.0)
+UPDATE_SUCCESS_CODES = {
+    "updated",
+    "force_updated",
+    "up_to_date",
+}
+UPDATE_ERROR_CODES = {
+    "network_error",
+    "authentication_error",
+    "repository_error",
+    "permission_error",
+    "timeout",
+    "git_unavailable",
+    "invalid_request",
+    "git_error",
+}
+UPDATE_RESPONSE_CODES = {
+    *UPDATE_SUCCESS_CODES,
+    *UPDATE_ERROR_CODES,
+    "force_required",
+}
+UPDATE_AUTHORIZATION_TTL_SECONDS = 30 * 60
+UPDATE_AUTHORIZATIONS: Dict[str, Dict[str, Any]] = {}
 
-    UPDATE_405_HINT = (
-        "Module firmware missing POST /api/update (often an older ChronoRootControl). "
-        "Update that Pi once via SSH/git pull, then retry."
-    )
 
-    for r in results:
-        msg = str(r.get("message") or "")
-        if r.get("status") == "error" and "405" in msg:
-            r["message"] = UPDATE_405_HINT
-
-    changed_macs = [
-        r["mac"]
-        for r in results
-        if r.get("status") == "success" and (r.get("data") or {}).get("changed")
+def _issue_update_authorization(mac: str, action: str) -> str:
+    """Create a short-lived, one-time authorization bound to one module/action."""
+    now = time.monotonic()
+    expired = [
+        token
+        for token, authorization in UPDATE_AUTHORIZATIONS.items()
+        if authorization["expires_at"] <= now
     ]
-    if changed_macs:
-        await asyncio.sleep(0.5)
-        await broadcast_to_nodes(changed_macs, "GET", "restart_service", timeout=1.5)
+    for token in expired:
+        UPDATE_AUTHORIZATIONS.pop(token, None)
 
-    ok = sum(1 for r in results if r.get("status") == "success")
-    failed = len(results) - ok
-    parts = [f"Update complete: {ok} ok"]
-    if changed_macs:
-        parts.append(f"{len(changed_macs)} restarted")
-    if failed:
-        parts.append(f"{failed} failed")
-    has_405 = any(
-        r.get("status") == "error" and UPDATE_405_HINT in str(r.get("message") or "")
-        for r in results
+    token = secrets.token_urlsafe(32)
+    UPDATE_AUTHORIZATIONS[token] = {
+        "mac": normalize_mac(mac),
+        "action": action,
+        "expires_at": now + UPDATE_AUTHORIZATION_TTL_SECONDS,
+    }
+    return token
+
+
+def _consume_update_authorization(token: str, mac: str, action: str) -> bool:
+    """Validate and consume an authorization so it cannot be replayed."""
+    authorization = UPDATE_AUTHORIZATIONS.pop(token, None)
+    if not authorization:
+        return False
+    return (
+        authorization["expires_at"] > time.monotonic()
+        and authorization["mac"] == normalize_mac(mac)
+        and authorization["action"] == action
     )
-    if has_405:
-        parts.append("some modules need a one-time manual ChronoRootControl upgrade")
-    # Surface a few per-node messages for the toast
-    snippets = []
-    for r in results[:5]:
-        msg = (r.get("data") or {}).get("message") or r.get("message") or r.get("status")
-        snippets.append(f"{r.get('mac')}: {msg}")
-    message = "; ".join(parts)
-    if snippets:
-        message = message + " — " + " | ".join(snippets)
 
-    return {"status": "complete", "results": results, "message": message}
+
+def _invalid_update_action(mac: str, message: str) -> Dict[str, Any]:
+    return {
+        "mac": mac,
+        "status": "error",
+        "http_status": None,
+        "result": False,
+        "code": "invalid_request",
+        "message": message,
+        "changed": False,
+        "can_force": False,
+    }
+
+
+def _normalize_update_result(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Expose only the stable update contract, never raw HTTP or Git output."""
+    mac = raw.get("mac")
+    http_status = raw.get("http_status")
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+
+    if http_status is None:
+        if raw.get("error_type") == "ReadTimeout":
+            return {
+                "mac": mac,
+                "status": "error",
+                "http_status": None,
+                "result": False,
+                "code": "timeout",
+                "message": (
+                    "Fleet Commander timed out waiting for the module's "
+                    "update response."
+                ),
+                "changed": False,
+                "can_force": False,
+            }
+        return {
+            "mac": mac,
+            "status": "error",
+            "http_status": None,
+            "result": False,
+            "code": "module_unreachable",
+            "message": "Fleet Commander could not contact this module.",
+            "changed": False,
+            "can_force": False,
+        }
+
+    code = data.get("code")
+    message = data.get("message")
+    result = data.get("result") is True
+    changed = data.get("changed") is True
+    can_force = data.get("can_force") is True
+
+    valid_shape = (
+        isinstance(code, str)
+        and code in UPDATE_RESPONSE_CODES
+        and isinstance(message, str)
+        and isinstance(data.get("result"), bool)
+        and isinstance(data.get("changed"), bool)
+        and isinstance(data.get("can_force"), bool)
+    )
+    if not valid_shape:
+        return {
+            "mac": mac,
+            "status": "error",
+            "http_status": http_status,
+            "result": False,
+            "code": "invalid_request",
+            "message": (
+                "The module returned an unsupported update response. "
+                "It may need a one-time manual ChronoRootControl upgrade."
+            ),
+            "changed": False,
+            "can_force": False,
+        }
+
+    is_changed_success = (
+        200 <= http_status < 300
+        and result
+        and code in {"updated", "force_updated"}
+        and changed
+        and not can_force
+    )
+    is_up_to_date = (
+        200 <= http_status < 300
+        and result
+        and code == "up_to_date"
+        and not changed
+        and not can_force
+    )
+    is_force_required = (
+        http_status == 409
+        and not result
+        and code == "force_required"
+        and not changed
+        and can_force
+    )
+    is_classified_error = (
+        http_status >= 400
+        and not result
+        and code in UPDATE_ERROR_CODES
+        and not changed
+        and not can_force
+    )
+    if is_changed_success or is_up_to_date:
+        status = "success"
+    elif is_force_required:
+        status = "warning"
+    elif is_classified_error:
+        status = "error"
+    else:
+        return {
+            "mac": mac,
+            "status": "error",
+            "http_status": http_status,
+            "result": False,
+            "code": "invalid_request",
+            "message": "The module returned an inconsistent update result.",
+            "changed": False,
+            "can_force": False,
+        }
+
+    return {
+        "mac": mac,
+        "status": status,
+        "http_status": http_status,
+        "result": result,
+        "code": code,
+        "message": message,
+        "changed": changed,
+        "can_force": can_force,
+    }
+
+
+@router.post("/bulk/update")
+async def bulk_software_update(req: BulkUpdateRequest):
+    """
+    Run one explicit update step on each selected module.
+
+    The UI always calls this first with force=false. A force retry is sent only
+    for an individual module after the operator confirms the destructive step.
+    Restarts are handled separately so changed=false modules are never offered
+    or sent a restart.
+    """
+    if req.force:
+        valid_force_request = (
+            len(req.target_macs) == 1
+            and bool(req.authorization_token)
+            and _consume_update_authorization(
+                req.authorization_token,
+                req.target_macs[0],
+                "force",
+            )
+        )
+        if not valid_force_request:
+            return {
+                "status": "complete",
+                "results": [
+                    _invalid_update_action(
+                        mac,
+                        "Force update authorization is missing, expired, or invalid.",
+                    )
+                    for mac in req.target_macs
+                ],
+            }
+
+    def get_update_payload(mac, state):
+        return {"force": True} if req.force else {}
+
+    raw_results = await broadcast_to_nodes(
+        req.target_macs,
+        "POST",
+        "update",
+        get_payload_fn=get_update_payload,
+        timeout=130.0,
+    )
+    results = [_normalize_update_result(r) for r in raw_results]
+    for result in results:
+        if (
+            not req.force
+            and result["http_status"] == 409
+            and result["result"] is False
+            and result["code"] == "force_required"
+            and result["can_force"] is True
+        ):
+            result["force_token"] = _issue_update_authorization(
+                result["mac"],
+                "force",
+            )
+        if result["result"] is True and result["changed"] is True:
+            result["restart_token"] = _issue_update_authorization(
+                result["mac"],
+                "restart",
+            )
+
+    return {"status": "complete", "results": results}
+
+
+@router.post("/bulk/update/restart")
+async def restart_updated_modules(req: AuthorizedModuleActionRequest):
+    """Restart explicitly selected modules after the operator accepts the offer."""
+    valid_restart_request = (
+        len(req.target_macs) == 1
+        and _consume_update_authorization(
+            req.authorization_token,
+            req.target_macs[0],
+            "restart",
+        )
+    )
+    if not valid_restart_request:
+        return {
+            "status": "complete",
+            "results": [
+                _invalid_update_action(
+                    mac,
+                    "Restart authorization is missing, expired, or invalid.",
+                )
+                for mac in req.target_macs
+            ],
+        }
+
+    raw_results = await broadcast_to_nodes(
+        req.target_macs,
+        "GET",
+        "restart_service",
+        timeout=1.5,
+    )
+    results = []
+    expected_disconnects = {"ReadTimeout", "RemoteProtocolError"}
+    for raw in raw_results:
+        request_dispatched = (
+            raw.get("http_status") is not None
+            or raw.get("status") == "success"
+            or raw.get("error_type") in expected_disconnects
+        )
+        if request_dispatched:
+            results.append({
+                "mac": raw.get("mac"),
+                "status": "progress",
+                "result": True,
+                "code": "restarting",
+                "message": (
+                    "Restart command sent. The module may be briefly unavailable "
+                    "while its services restart."
+                ),
+                "changed": True,
+                "can_force": False,
+            })
+        else:
+            results.append({
+                "mac": raw.get("mac"),
+                "status": "error",
+                "result": False,
+                "code": "module_unreachable",
+                "message": "Fleet Commander could not contact this module.",
+                "changed": True,
+                "can_force": False,
+            })
+
+    return {"status": "complete", "results": results}
 
 
 @router.post("/bulk/time")

@@ -1,0 +1,305 @@
+<div class="modal fade" id="softwareUpdateModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable modal-fullscreen-sm-down">
+    <div class="modal-content shadow">
+      <div class="modal-header bg-dark text-white border-0 py-3">
+        <h5 class="modal-title"><i class="fas fa-download"></i> Module Software Update</h5>
+      </div>
+      <div class="modal-body bg-light">
+        <div class="alert alert-light border mb-3" id="software-update-summary">
+          Checking each module with a safe, non-destructive update.
+        </div>
+        <div class="list-group shadow-sm" id="software-update-results"></div>
+      </div>
+      <div class="modal-footer bg-white border-0">
+        <button type="button" class="btn btn-dark px-4" id="software-update-close" data-bs-dismiss="modal" disabled>Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+    const SOFTWARE_UPDATE_STATUS = {
+        updating: { label: 'Checking for updates', badge: 'bg-primary', icon: 'fa-sync-alt fa-spin' },
+        forcing: { label: 'Forcing update', badge: 'bg-warning text-dark', icon: 'fa-sync-alt fa-spin' },
+        updated: { label: 'Updated — restart required', badge: 'bg-success', icon: 'fa-check-circle' },
+        force_updated: { label: 'Force updated — restart required', badge: 'bg-success', icon: 'fa-check-circle' },
+        up_to_date: { label: 'Already up to date', badge: 'bg-light text-dark border', icon: 'fa-check-circle text-success' },
+        force_required: { label: 'Confirmation required', badge: 'bg-warning text-dark', icon: 'fa-exclamation-triangle' },
+        cancelled: { label: 'Force update cancelled', badge: 'bg-secondary', icon: 'fa-ban' },
+        restarting: { label: 'Restarting services', badge: 'bg-primary', icon: 'fa-sync-alt fa-spin' },
+        network_error: { label: 'Module cannot reach Git remote', badge: 'bg-danger', icon: 'fa-exclamation-circle' },
+        authentication_error: { label: 'Git authentication failed', badge: 'bg-danger', icon: 'fa-exclamation-circle' },
+        repository_error: { label: 'Repository configuration error', badge: 'bg-danger', icon: 'fa-exclamation-circle' },
+        permission_error: { label: 'Repository permission error', badge: 'bg-danger', icon: 'fa-exclamation-circle' },
+        timeout: { label: 'Update timed out', badge: 'bg-danger', icon: 'fa-clock' },
+        git_unavailable: { label: 'Git unavailable', badge: 'bg-danger', icon: 'fa-exclamation-circle' },
+        invalid_request: { label: 'Invalid update request', badge: 'bg-danger', icon: 'fa-exclamation-circle' },
+        git_error: { label: 'Git update failed', badge: 'bg-danger', icon: 'fa-exclamation-circle' },
+        module_unreachable: { label: 'Module unreachable', badge: 'bg-danger', icon: 'fa-unlink' },
+    };
+
+    let softwareUpdateStates = new Map();
+
+    function escapeUpdateText(value) {
+        const span = document.createElement('span');
+        span.textContent = value == null ? '' : String(value);
+        return span.innerHTML;
+    }
+
+    function getUpdateModuleName(mac) {
+        const node = (typeof lastFleetNodes !== 'undefined' ? lastFleetNodes : []).find(item => item.mac === mac);
+        return node?.hostname || node?.raw_hostname || mac;
+    }
+
+    function renderSoftwareUpdateResults() {
+        const container = document.getElementById('software-update-results');
+        container.innerHTML = Array.from(softwareUpdateStates.values()).map(item => {
+            const visual = SOFTWARE_UPDATE_STATUS[item.code] || SOFTWARE_UPDATE_STATUS.git_error;
+            const message = item.message
+                ? `<div class="text-muted small mt-1">${escapeUpdateText(item.message)}</div>`
+                : '';
+            return `
+                <div class="list-group-item bg-white py-3">
+                    <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
+                        <div class="me-3">
+                            <div class="font-weight-bold text-dark">${escapeUpdateText(item.hostname)}</div>
+                            <div class="text-muted small" style="font-family: monospace;">${escapeUpdateText(item.mac)}</div>
+                        </div>
+                        <span class="badge ${visual.badge} px-3 py-2">
+                            <i class="fas ${visual.icon} me-1"></i> ${visual.label}
+                        </span>
+                    </div>
+                    ${message}
+                </div>`;
+        }).join('');
+    }
+
+    function setSoftwareUpdateState(mac, values) {
+        const current = softwareUpdateStates.get(mac) || {
+            mac,
+            hostname: getUpdateModuleName(mac),
+            result: false,
+            code: 'updating',
+            message: '',
+            changed: false,
+            can_force: false,
+            http_status: null,
+        };
+        softwareUpdateStates.set(mac, { ...current, ...values });
+        renderSoftwareUpdateResults();
+    }
+
+    async function requestSoftwareUpdate(targetMacs, force, authorizationToken = null) {
+        const response = await fetch('/api/fleet/bulk/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                target_macs: targetMacs,
+                force,
+                authorization_token: authorizationToken,
+            }),
+        });
+        if (!response.ok) throw new Error('Fleet update request failed');
+        const payload = await response.json();
+        return Array.isArray(payload.results) ? payload.results : [];
+    }
+
+    async function requestModuleRestart(mac, authorizationToken) {
+        const response = await fetch('/api/fleet/bulk/update/restart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                target_macs: [mac],
+                authorization_token: authorizationToken,
+            }),
+        });
+        if (!response.ok) throw new Error('Fleet restart request failed');
+        const payload = await response.json();
+        return (payload.results || []).find(item => item.mac === mac);
+    }
+
+    function applySoftwareUpdateResults(targetMacs, results) {
+        targetMacs.forEach(mac => {
+            const result = results.find(item => item.mac === mac);
+            if (result) {
+                setSoftwareUpdateState(mac, result);
+            } else {
+                setSoftwareUpdateState(mac, {
+                    result: false,
+                    code: 'module_unreachable',
+                    message: 'Fleet Commander did not receive an update response from this module.',
+                    changed: false,
+                    can_force: false,
+                    http_status: null,
+                });
+            }
+        });
+    }
+
+    async function confirmSoftwareUpdateStep(title, message, isDanger, confirmLabel, cancelLabel) {
+        const modalElement = document.getElementById('softwareUpdateModal');
+        const updateModal = bootstrap.Modal.getOrCreateInstance(modalElement);
+        // Bootstrap ignores hide/show calls made while the preceding modal
+        // transition is still running.
+        await new Promise(resolve => setTimeout(resolve, 350));
+        const hidden = modalElement.classList.contains('show')
+            ? new Promise(resolve => modalElement.addEventListener('hidden.bs.modal', resolve, { once: true }))
+            : Promise.resolve();
+        updateModal.hide();
+        await hidden;
+        const confirmed = await asyncConfirm(title, message, isDanger, confirmLabel, cancelLabel);
+        const shown = new Promise(resolve => modalElement.addEventListener('shown.bs.modal', resolve, { once: true }));
+        updateModal.show();
+        await shown;
+        return confirmed;
+    }
+
+    async function runSoftwareUpdate(targetMacs) {
+        const confirmed = await asyncConfirm(
+            'Update Module Software',
+            `Check ${targetMacs.length} selected module${targetMacs.length === 1 ? '' : 's'} for updates?<br>` +
+            '<small class="text-muted">The first check is non-destructive. Local work will never be discarded without a separate confirmation, and restarts are offered only when code changes.</small>'
+        );
+        if (!confirmed) return;
+
+        softwareUpdateStates = new Map();
+        targetMacs.forEach(mac => setSoftwareUpdateState(mac, {
+            hostname: getUpdateModuleName(mac),
+            result: false,
+            code: 'updating',
+            message: 'Waiting for the module to finish its safe update check.',
+            changed: false,
+            can_force: false,
+            http_status: null,
+        }));
+
+        const closeButton = document.getElementById('software-update-close');
+        const summary = document.getElementById('software-update-summary');
+        document.querySelectorAll('.bulk-action-bar button').forEach(button => button.disabled = true);
+        closeButton.disabled = true;
+        summary.className = 'alert alert-light border mb-3';
+        summary.innerText = 'Checking each module with a safe, non-destructive update.';
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('softwareUpdateModal')).show();
+
+        try {
+            const safeResults = await requestSoftwareUpdate(targetMacs, false);
+            applySoftwareUpdateResults(targetMacs, safeResults);
+
+            const forceCandidates = safeResults.filter(item =>
+                item.http_status === 409
+                && item.result === false
+                && item.code === 'force_required'
+                && item.can_force === true
+            );
+
+            for (const candidate of forceCandidates) {
+                const state = softwareUpdateStates.get(candidate.mac);
+                const forceConfirmed = await confirmSoftwareUpdateStep(
+                    `Force update ${escapeUpdateText(state.hostname)}?`,
+                    '<div class="text-start">' +
+                    '<p>This module cannot update safely because its repository contains local work.</p>' +
+                    `<p class="text-muted small">${escapeUpdateText(state.message)}</p>` +
+                    '<p class="text-danger font-weight-bold mb-2">Forcing permanently discards:</p>' +
+                    '<ul class="text-danger"><li>Tracked changes</li><li>Local commits</li><li>Untracked files</li></ul>' +
+                    '<p class="mb-0"><strong>Ignored files are preserved.</strong></p>' +
+                    '</div>',
+                    true,
+                    'Yes, force update',
+                    'No'
+                );
+
+                if (!forceConfirmed) {
+                    setSoftwareUpdateState(candidate.mac, {
+                        result: false,
+                        code: 'cancelled',
+                        message: 'The operator declined the destructive force update.',
+                        changed: false,
+                        can_force: false,
+                    });
+                    continue;
+                }
+
+                setSoftwareUpdateState(candidate.mac, {
+                    result: false,
+                    code: 'forcing',
+                    message: 'Resetting this module to its configured Git upstream.',
+                    changed: false,
+                    can_force: false,
+                });
+                try {
+                    const forcedResults = await requestSoftwareUpdate(
+                        [candidate.mac],
+                        true,
+                        candidate.force_token
+                    );
+                    applySoftwareUpdateResults([candidate.mac], forcedResults);
+                } catch (error) {
+                    setSoftwareUpdateState(candidate.mac, {
+                        result: false,
+                        code: 'module_unreachable',
+                        message: 'Fleet Commander could not complete the force update request.',
+                        changed: false,
+                        can_force: false,
+                    });
+                }
+            }
+
+            const restartCandidates = Array.from(softwareUpdateStates.values()).filter(item =>
+                item.result === true && item.changed === true
+            );
+            for (const candidate of restartCandidates) {
+                const restartConfirmed = await confirmSoftwareUpdateStep(
+                    `Restart ${escapeUpdateText(candidate.hostname)}?`,
+                    'The update changed this module’s software. Restart its services now to run the new version?',
+                    false,
+                    'Yes, restart',
+                    'No'
+                );
+                if (!restartConfirmed) continue;
+
+                setSoftwareUpdateState(candidate.mac, {
+                    code: 'restarting',
+                    message: 'Sending the service restart command.',
+                });
+                try {
+                    const restartResult = await requestModuleRestart(
+                        candidate.mac,
+                        candidate.restart_token
+                    );
+                    if (restartResult) setSoftwareUpdateState(candidate.mac, restartResult);
+                } catch (error) {
+                    setSoftwareUpdateState(candidate.mac, {
+                        result: false,
+                        code: 'module_unreachable',
+                        message: 'Fleet Commander could not send the restart command.',
+                    });
+                }
+            }
+
+            summary.className = 'alert alert-info border mb-3';
+            summary.innerText = 'Update workflow complete. Review each module result below.';
+        } catch (error) {
+            targetMacs.forEach(mac => {
+                if (softwareUpdateStates.get(mac)?.code === 'updating') {
+                    setSoftwareUpdateState(mac, {
+                        result: false,
+                        code: 'module_unreachable',
+                        message: 'Fleet Commander could not complete the safe update request.',
+                        changed: false,
+                        can_force: false,
+                    });
+                }
+            });
+            summary.className = 'alert alert-danger border mb-3';
+            summary.innerText = 'The update workflow could not be completed. Review the module results below.';
+        } finally {
+            closeButton.disabled = false;
+            selectedMacs.clear();
+            document.getElementById('selected-count').innerText = '0';
+            const selectAll = document.getElementById('selectAll');
+            if (selectAll) selectAll.checked = false;
+            document.querySelectorAll('.bulk-action-bar button').forEach(button => button.disabled = false);
+            fetchFleetData();
+        }
+    }
+</script>

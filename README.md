@@ -203,7 +203,7 @@ Next to **Discover Nodes**:
 * **Commander Time** — set NTP server (network mode) or a manual date/time on the commander host.
 * **Network** — view host addresses and change the **discovery subnet** (`FLEET_TARGET_SUBNET`, e.g. `192.168.1` or `192.168.50`) without editing systemd.
 
-Bulk **Update** on modules requires ChronoRootControl builds that expose `POST /api/update`. Older modules return HTTP 405 (Flask treats `update` as an experiment id). Update those Pis once via SSH/`git pull`, then fleet Update will work.
+Bulk **Update** checks every selected module non-destructively first. If a module reports local files or commits, Fleet Commander asks for a destructive force update for that module only; ignored files are preserved. Modules whose code changed are then offered an individual service restart. ChronoRootControl builds without the structured `POST /api/update` API need a one-time manual update via SSH/`git pull`.
 
 After upgrading, click **Discover** once so each module’s `USE_NTP` flag is copied into the fleet database (fixes System Clock badges that previously always showed NTP).
 
