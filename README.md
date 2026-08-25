@@ -203,7 +203,7 @@ Next to **Discover Nodes**:
 * **Commander Time** — set NTP server (network mode) or a manual date/time on the commander host.
 * **Network** — view host addresses and change the **discovery subnet** (`FLEET_TARGET_SUBNET`, e.g. `192.168.1` or `192.168.50`) without editing systemd.
 
-Bulk **Update** checks every selected module non-destructively first. If a module reports local files or commits, Fleet Commander asks for a destructive force update for that module only; ignored files are preserved. Modules whose code changed are then offered an individual service restart. ChronoRootControl builds without the structured `POST /api/update` API need a one-time manual update via SSH/`git pull`.
+Bulk **Update** checks every selected module non-destructively first. If a module reports local files or commits, Fleet Commander asks for a destructive force update for that module only; ignored files are preserved. Services restart automatically after an update changes code. The original three-field `POST /api/update` response remains supported, and unsupported responses trigger a compatibility restart so newly downloaded API code can load.
 
 After upgrading, click **Discover** once so each module’s `USE_NTP` flag is copied into the fleet database (fixes System Clock badges that previously always showed NTP).
 

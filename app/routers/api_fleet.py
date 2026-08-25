@@ -295,6 +295,37 @@ def _normalize_update_result(raw: Dict[str, Any]) -> Dict[str, Any]:
     changed = data.get("changed") is True
     can_force = data.get("can_force") is True
 
+    legacy_shape = (
+        "code" not in data
+        and "can_force" not in data
+        and isinstance(message, str)
+        and isinstance(data.get("result"), bool)
+        and isinstance(data.get("changed"), bool)
+    )
+    if legacy_shape:
+        if 200 <= http_status < 300 and result:
+            return {
+                "mac": mac,
+                "status": "success",
+                "http_status": http_status,
+                "result": True,
+                "code": "updated" if changed else "up_to_date",
+                "message": message,
+                "changed": changed,
+                "can_force": False,
+            }
+        if http_status >= 400 and not result and not changed:
+            return {
+                "mac": mac,
+                "status": "error",
+                "http_status": http_status,
+                "result": False,
+                "code": "git_error",
+                "message": message,
+                "changed": False,
+                "can_force": False,
+            }
+
     valid_shape = (
         isinstance(code, str)
         and code in UPDATE_RESPONSE_CODES
@@ -316,6 +347,7 @@ def _normalize_update_result(raw: Dict[str, Any]) -> Dict[str, Any]:
             ),
             "changed": False,
             "can_force": False,
+            "_restart_fallback": True,
         }
 
     is_changed_success = (
@@ -362,6 +394,7 @@ def _normalize_update_result(raw: Dict[str, Any]) -> Dict[str, Any]:
             "message": "The module returned an inconsistent update result.",
             "changed": False,
             "can_force": False,
+            "_restart_fallback": True,
         }
 
     return {
@@ -383,8 +416,8 @@ async def bulk_software_update(req: BulkUpdateRequest):
 
     The UI always calls this first with force=false. A force retry is sent only
     for an individual module after the operator confirms the destructive step.
-    Restarts are handled separately so changed=false modules are never offered
-    or sent a restart.
+    Changed updates and unsupported legacy responses receive a one-time restart
+    authorization so the UI can restart them automatically.
     """
     if req.force:
         valid_force_request = (
@@ -420,6 +453,7 @@ async def bulk_software_update(req: BulkUpdateRequest):
     )
     results = [_normalize_update_result(r) for r in raw_results]
     for result in results:
+        restart_fallback = result.pop("_restart_fallback", False)
         if (
             not req.force
             and result["http_status"] == 409
@@ -431,7 +465,10 @@ async def bulk_software_update(req: BulkUpdateRequest):
                 result["mac"],
                 "force",
             )
-        if result["result"] is True and result["changed"] is True:
+        if (
+            (result["result"] is True and result["changed"] is True)
+            or restart_fallback
+        ):
             result["restart_token"] = _issue_update_authorization(
                 result["mac"],
                 "restart",
@@ -442,7 +479,7 @@ async def bulk_software_update(req: BulkUpdateRequest):
 
 @router.post("/bulk/update/restart")
 async def restart_updated_modules(req: AuthorizedModuleActionRequest):
-    """Restart explicitly selected modules after the operator accepts the offer."""
+    """Consume an update-issued authorization and restart its bound module."""
     valid_restart_request = (
         len(req.target_macs) == 1
         and _consume_update_authorization(

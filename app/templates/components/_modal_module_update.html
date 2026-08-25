@@ -158,7 +158,7 @@
         const confirmed = await asyncConfirm(
             'Update Module Software',
             `Check ${targetMacs.length} selected module${targetMacs.length === 1 ? '' : 's'} for updates?<br>` +
-            '<small class="text-muted">The first check is non-destructive. Local work will never be discarded without a separate confirmation, and restarts are offered only when code changes.</small>'
+            '<small class="text-muted">The first check is non-destructive. Local work will never be discarded without a separate confirmation. Services restart automatically after a successful change or an unsupported legacy response.</small>'
         );
         if (!confirmed) return;
 
@@ -244,22 +244,15 @@
                 }
             }
 
-            const restartCandidates = Array.from(softwareUpdateStates.values()).filter(item =>
-                item.result === true && item.changed === true
+            const restartCandidates = Array.from(softwareUpdateStates.values()).filter(
+                item => Boolean(item.restart_token)
             );
             for (const candidate of restartCandidates) {
-                const restartConfirmed = await confirmSoftwareUpdateStep(
-                    `Restart ${escapeUpdateText(candidate.hostname)}?`,
-                    'The update changed this module’s software. Restart its services now to run the new version?',
-                    false,
-                    'Yes, restart',
-                    'No'
-                );
-                if (!restartConfirmed) continue;
-
                 setSoftwareUpdateState(candidate.mac, {
                     code: 'restarting',
-                    message: 'Sending the service restart command.',
+                    message: candidate.code === 'invalid_request'
+                        ? 'Restarting to load a possible legacy software update.'
+                        : 'Restarting automatically to run the updated software.',
                 });
                 try {
                     const restartResult = await requestModuleRestart(
