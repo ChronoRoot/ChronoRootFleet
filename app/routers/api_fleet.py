@@ -1208,17 +1208,53 @@ async def bulk_sync_test(req: BulkSyncTestRequest):
                 "sync_user": m.sync_user,
             }
 
+    live_cfg = {}
+    cfg_results = await broadcast_to_nodes(req.target_macs, "GET", "config")
+    with Session(engine) as session:
+        for row in cfg_results:
+            mac = row.get("mac")
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            if row.get("status") != "success":
+                continue
+            remote_type = data.get("SYNC_REMOTE_TYPE") or data.get("sync_remote_type")
+            interval = data.get("SYNC_INTERVAL") or data.get("sync_interval")
+            live_cfg[normalize_mac(mac)] = {"sync_remote_type": remote_type}
+            mod = find_robot_module(session, mac)
+            if not mod:
+                continue
+            if remote_type:
+                mod.sync_remote_type = remote_type
+            if interval:
+                try:
+                    mod.sync_interval = int(interval)
+                except (TypeError, ValueError):
+                    pass
+            session.add(mod)
+        session.commit()
+
     test_payloads = {}
     results = []
     for mac in req.target_macs:
         inv = inventory.get(normalize_mac(mac), {})
+        live = live_cfg.get(normalize_mac(mac), {})
         payload = dict(req_dict)
-        remote_type = payload.get("remote_type") or inv.get("sync_remote_type")
+        remote_type = (
+            payload.get("remote_type")
+            or live.get("sync_remote_type")
+            or inv.get("sync_remote_type")
+        )
+        if remote_type == "local":
+            results.append({
+                "mac": mac,
+                "status": "error",
+                "message": "This module is Local Drive, not SSH/FTP.",
+            })
+            continue
         if remote_type not in ("sftp", "ftp"):
             results.append({
                 "mac": mac,
                 "status": "error",
-                "message": "Login test is SSH/FTP only.",
+                "message": "Could not read protocol from the module. Login test is SSH/FTP only.",
             })
             continue
         payload["remote_type"] = remote_type
@@ -1230,13 +1266,6 @@ async def bulk_sync_test(req: BulkSyncTestRequest):
             payload["port"] = inv["sync_port"]
         if "password" not in payload:
             payload["password"] = "********"
-        if not payload.get("host") or not payload.get("user"):
-            results.append({
-                "mac": mac,
-                "status": "error",
-                "message": "Fill Host and Username once — this module has no saved SSH/FTP identity.",
-            })
-            continue
         test_payloads[mac] = payload
 
     if test_payloads:
