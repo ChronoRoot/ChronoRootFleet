@@ -1266,18 +1266,52 @@ async def bulk_sync_test(req: BulkSyncTestRequest):
             payload["port"] = inv["sync_port"]
         if "password" not in payload:
             payload["password"] = "********"
+        # Module test_rclone_connection builds a temp remote; host/user must be
+        # strings. Omitting them yields PathLike NoneType on the Pi.
+        if not payload.get("host") or not payload.get("user"):
+            results.append({
+                "mac": mac,
+                "status": "error",
+                "message": (
+                    "Host and Username are required to test SSH/FTP. "
+                    "GET /api/config does not return them — fill them in the form "
+                    "(leave password blank to reuse the one on the Pi)."
+                ),
+            })
+            continue
+        if "port" not in payload:
+            payload["port"] = 22 if remote_type == "sftp" else 21
         test_payloads[mac] = payload
 
     if test_payloads:
         def get_test_payload(mac, state):
             return test_payloads[mac]
-        results.extend(await broadcast_to_nodes(
+        test_results = await broadcast_to_nodes(
             list(test_payloads.keys()),
             "POST",
             "sync/test",
             get_payload_fn=get_test_payload,
             timeout=15.0,
-        ))
+        )
+        results.extend(test_results)
+        with Session(engine) as session:
+            for row in test_results:
+                if row.get("status") != "success":
+                    continue
+                payload = test_payloads.get(row.get("mac"), {})
+                mod = find_robot_module(session, row.get("mac"))
+                if not mod:
+                    continue
+                if payload.get("host"):
+                    mod.sync_host = payload["host"]
+                if payload.get("user"):
+                    mod.sync_user = payload["user"]
+                if payload.get("port") is not None:
+                    mod.sync_port = payload["port"]
+                if payload.get("remote_type"):
+                    mod.sync_remote_type = payload["remote_type"]
+                session.add(mod)
+            session.commit()
     return {"status": "complete", "results": results}
 
 @router.post("/bulk/sync/trigger")
