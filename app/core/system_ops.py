@@ -99,24 +99,26 @@ def _format_called_process_error(exc: subprocess.CalledProcessError) -> str:
     return f"OS command failed ({cmd}): {detail}"
 
 
-def run_git_update() -> Tuple[bool, str, bool]:
+def run_git_update() -> Dict[str, Any]:
     """
     Run ``git pull --ff-only`` in the Fleet Commander install directory.
 
-    Returns ``(success, message, changed)``. ``changed`` is True only when new
-    code was actually pulled.
+    Returns the same shape as a module ``POST /api/update`` result:
+    ``result``, ``code``, ``message``, ``changed``, ``can_force``.
     """
     git_bin = _which("git", "/usr/bin/git")
     if not git_bin:
-        return (
-            False,
-            (
-                "git was not found on PATH. The fleetcontrol systemd unit often "
-                "sets PATH to only the venv — update it to include /usr/bin "
+        return {
+            "result": False,
+            "code": "git_unavailable",
+            "message": (
+                "Git is not available on this Fleet Commander. The fleetcontrol "
+                "systemd unit often sets PATH to only the venv — include /usr/bin "
                 "(see setup.sh), then restart the service."
             ),
-            False,
-        )
+            "changed": False,
+            "can_force": False,
+        }
 
     env = _host_env(
         {
@@ -141,23 +143,28 @@ def run_git_update() -> Tuple[bool, str, bool]:
             env=env,
         )
     except subprocess.TimeoutExpired:
-        return (
-            False,
-            (
+        return {
+            "result": False,
+            "code": "timeout",
+            "message": (
                 "The update timed out after 2 minutes. This usually means a slow "
                 "or dropped internet connection. Please try again."
             ),
-            False,
-        )
+            "changed": False,
+            "can_force": False,
+        }
     except FileNotFoundError:
-        return (
-            False,
-            (
-                "git was not found on PATH. Update the fleetcontrol service PATH "
-                "to include /usr/bin (see setup.sh), then restart the service."
+        return {
+            "result": False,
+            "code": "git_unavailable",
+            "message": (
+                "Git is not available on this Fleet Commander. Update the "
+                "fleetcontrol service PATH to include /usr/bin (see setup.sh), "
+                "then restart the service."
             ),
-            False,
-        )
+            "changed": False,
+            "can_force": False,
+        }
 
     out = (result.stdout or "").strip()
     err = (result.stderr or "").strip()
@@ -166,62 +173,132 @@ def run_git_update() -> Tuple[bool, str, bool]:
 
     if result.returncode == 0:
         if "already up to date" in low or "already up-to-date" in low:
-            return True, "You are already running the latest version. No update was needed.", False
+            return {
+                "result": True,
+                "code": "up_to_date",
+                "message": "You are already running the latest version. No update was needed.",
+                "changed": False,
+                "can_force": False,
+            }
         summary = out or "Changes were pulled from the remote repository."
-        return (
-            True,
-            (
-                "Update successful! The latest code has been pulled.\n\n"
-                f"{summary}\n\n"
-                "The Fleet Commander service will restart to load the new version."
+        return {
+            "result": True,
+            "code": "updated",
+            "message": (
+                "The latest code has been pulled. The Fleet Commander service "
+                f"will restart to load the new version.\n\n{summary}"
             ),
-            True,
-        )
+            "changed": True,
+            "can_force": False,
+        }
 
-    network_markers = [
-        "could not resolve host",
-        "unable to access",
-        "connection timed out",
-        "could not read from remote repository",
-        "network is unreachable",
-        "temporary failure in name resolution",
-        "failed to connect",
-        "connection refused",
-    ]
-    if any(marker in low for marker in network_markers):
-        return (
-            False,
-            (
-                "No internet connection detected. The device could not reach the "
-                "remote repository. Check the network and try again."
+    if any(
+        marker in low
+        for marker in (
+            "authentication failed",
+            "permission denied (publickey)",
+            "permission denied (keyboard-interactive)",
+            "invalid username or password",
+            "terminal prompts disabled",
+            "could not read username",
+            "access denied",
+            "403 forbidden",
+            "error: 403",
+            "authentication required",
+        )
+    ):
+        return {
+            "result": False,
+            "code": "authentication_error",
+            "message": (
+                "Git authentication failed. This Fleet Commander could not log "
+                "in to the remote. Check SSH keys or HTTPS credentials."
             ),
-            False,
-        )
+            "changed": False,
+            "can_force": False,
+        }
 
-    conflict_markers = [
-        "would be overwritten",
-        "local changes",
-        "not possible to fast-forward",
-        "diverging",
-        "non-fast-forward",
-        "unmerged",
-        "needs merge",
-    ]
-    if any(marker in low for marker in conflict_markers):
-        return (
-            False,
-            (
-                "Update blocked: this device has local changes or its branch has "
-                f"diverged from the remote. Manual intervention is required.\n\n{combined}"
+    if any(
+        marker in low
+        for marker in (
+            "could not resolve host",
+            "unable to access",
+            "connection timed out",
+            "network is unreachable",
+            "temporary failure in name resolution",
+            "failed to connect",
+            "connection refused",
+            "could not read from remote repository",
+        )
+    ):
+        return {
+            "result": False,
+            "code": "network_error",
+            "message": (
+                "This Fleet Commander cannot reach the Git remote. Check the "
+                "network connection and try again."
             ),
-            False,
-        )
+            "changed": False,
+            "can_force": False,
+        }
 
-    return (
-        False,
-        f"Update failed (git exit code {result.returncode}):\n\n{combined or 'Unknown error.'}",
-        False,
-    )
+    if any(
+        marker in low
+        for marker in (
+            "permission denied",
+            "operation not permitted",
+            "read-only file system",
+            "insufficient permission",
+        )
+    ):
+        return {
+            "result": False,
+            "code": "permission_error",
+            "message": (
+                "The Git working tree is not writable by the Fleet Commander "
+                "service. Check ownership of the install directory."
+            ),
+            "changed": False,
+            "can_force": False,
+        }
+
+    if any(
+        marker in low
+        for marker in (
+            "not a git repository",
+            "no such remote",
+            "would be overwritten",
+            "local changes",
+            "not possible to fast-forward",
+            "diverging",
+            "non-fast-forward",
+            "unmerged",
+            "needs merge",
+            "failed to push some refs",
+            "fetch first",
+            "couldn't find remote ref",
+            "does not appear to be a git repository",
+        )
+    ):
+        return {
+            "result": False,
+            "code": "repository_error",
+            "message": (
+                "A safe git pull is not possible. This install has local changes, "
+                "a diverged branch, or a misconfigured remote. Update the "
+                f"repository manually.\n\n{combined}"
+            ),
+            "changed": False,
+            "can_force": False,
+        }
+
+    return {
+        "result": False,
+        "code": "git_error",
+        "message": combined or "Git reported an unexpected error while updating.",
+        "changed": False,
+        "can_force": False,
+    }
 
 
 def schedule_service_restart(service: Optional[str] = None) -> None:

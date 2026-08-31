@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 from sqlmodel import Session, select
 
-from app.database import RobotModule, engine, ExperimentalBatch, ExperimentRun
+from app.database import RobotModule, engine, ExperimentalBatch, ExperimentRun, find_robot_module
 from app.core.state import (
     LIVE_FLEET_STATE,
     HTTP_CLIENT,
@@ -55,10 +55,10 @@ class BulkConfigRequest(BulkActionRequest):
     password: Optional[str] = None
 
 class BulkSyncTestRequest(BulkActionRequest):
-    remote_type: str = Field(..., pattern="^(sftp|ftp)$")
-    host: str
-    user: str
-    password: str
+    remote_type: Optional[str] = Field(None, pattern="^(sftp|ftp)$")
+    host: Optional[str] = None
+    user: Optional[str] = None
+    password: Optional[str] = None
     port: Optional[int] = None
 
 # --- ASYNC BROADCAST HELPER ---
@@ -575,36 +575,115 @@ async def bulk_time_sync(req: BulkTimeSyncRequest):
 # 3. ADD THE UWSGI RESTART (Inside bulk_config_update)
 @router.put("/bulk/config")
 async def bulk_config_update(req: BulkConfigRequest):
-    req_dict = req.model_dump(exclude={"target_macs"}, exclude_unset=True)
-    
+    req_dict = {
+        k: v for k, v in req.model_dump(exclude={"target_macs"}, exclude_unset=True).items()
+        if v != ""
+    }
+
     # --- 1. Map General System Keys ---
     general_keys = ["TIME_ZONE", "NTP_SERVER", "USE_NTP"]
     general_payload = {k: v for k, v in req_dict.items() if k in general_keys}
-    
+
     # --- 2. Map Sync Keys (Translate Case for Flask API) ---
-    sync_payload = {}
-    if "SYNC_ENABLED" in req_dict: sync_payload["sync_enabled"] = req_dict["SYNC_ENABLED"]
-    if "SYNC_INTERVAL" in req_dict: sync_payload["sync_interval"] = req_dict["SYNC_INTERVAL"]
-    
+    sync_base = {}
+    if "SYNC_ENABLED" in req_dict:
+        sync_base["sync_enabled"] = req_dict["SYNC_ENABLED"]
+    if "SYNC_INTERVAL" in req_dict:
+        sync_base["sync_interval"] = req_dict["SYNC_INTERVAL"]
     for k in ["remote_type", "destination_path", "host", "port", "user", "password"]:
-        if k in req_dict: sync_payload[k] = req_dict[k]
-        
+        if k in req_dict:
+            sync_base[k] = req_dict[k]
+
+    inventory = {}
+    with Session(engine) as session:
+        for m in session.exec(select(RobotModule)).all():
+            inventory[normalize_mac(m.mac_address)] = {
+                "sync_remote_type": m.sync_remote_type,
+                "sync_host": m.sync_host,
+                "sync_port": m.sync_port,
+                "sync_user": m.sync_user,
+            }
+
     results = []
-    successful_macs = set()
-    
+    gen_ok = set()
+    sync_ok = set()
+    sync_payloads = {}
+
     # --- 3. Dispatch General Config ---
     if general_payload:
         def get_gen_payload(mac, state): return general_payload
         res_gen = await broadcast_to_nodes(req.target_macs, "PUT", "config", get_payload_fn=get_gen_payload)
         results.extend(res_gen)
-        successful_macs.update([r["mac"] for r in res_gen if r["status"] == "success"])
-        
+        gen_ok = {r["mac"] for r in res_gen if r["status"] == "success"}
+
     # --- 4. Dispatch Sync Config ---
-    if sync_payload:
-        def get_sync_payload(mac, state): return sync_payload
-        res_sync = await broadcast_to_nodes(req.target_macs, "POST", "sync/config", get_payload_fn=get_sync_payload)
-        results.extend(res_sync)
-        successful_macs.update([r["mac"] for r in res_sync if r["status"] == "success"])
+    if sync_base:
+        rclone_keys = ("destination_path", "remote_type", "host", "user", "port", "password")
+        for mac in req.target_macs:
+            inv = inventory.get(normalize_mac(mac), {})
+            payload = dict(sync_base)
+            effective_type = payload.get("remote_type") or inv.get("sync_remote_type")
+            touches_rclone = any(k in payload for k in rclone_keys)
+            if effective_type in ("sftp", "ftp") and touches_rclone:
+                if "host" not in payload and inv.get("sync_host"):
+                    payload["host"] = inv["sync_host"]
+                if "user" not in payload and inv.get("sync_user"):
+                    payload["user"] = inv["sync_user"]
+                if "port" not in payload and inv.get("sync_port") is not None:
+                    payload["port"] = inv["sync_port"]
+                if "password" not in payload:
+                    payload["password"] = "********"
+                if not payload.get("host") or not payload.get("user"):
+                    results.append({
+                        "mac": mac,
+                        "status": "error",
+                        "message": "Fill Host and Username once — this module has no saved SSH/FTP identity.",
+                    })
+                    continue
+            sync_payloads[mac] = payload
+
+        res_sync = []
+        if sync_payloads:
+            def get_sync_payload(mac, state):
+                return sync_payloads[mac]
+            res_sync = await broadcast_to_nodes(
+                list(sync_payloads.keys()),
+                "POST",
+                "sync/config",
+                get_payload_fn=get_sync_payload,
+            )
+            results.extend(res_sync)
+            sync_ok = {r["mac"] for r in res_sync if r["status"] == "success"}
+
+            with Session(engine) as session:
+                for r in res_sync:
+                    if r.get("status") != "success":
+                        continue
+                    payload = sync_payloads.get(r["mac"], {})
+                    mod = find_robot_module(session, r["mac"])
+                    if not mod:
+                        continue
+                    if "remote_type" in payload:
+                        mod.sync_remote_type = payload["remote_type"]
+                    if "host" in payload:
+                        mod.sync_host = payload["host"]
+                    if "port" in payload:
+                        mod.sync_port = payload["port"]
+                    if "user" in payload:
+                        mod.sync_user = payload["user"]
+                    if "destination_path" in payload:
+                        mod.sync_destination = payload["destination_path"]
+                    if "sync_interval" in payload:
+                        mod.sync_interval = payload["sync_interval"]
+                    session.add(mod)
+                session.commit()
+
+    if general_payload and sync_base:
+        successful_macs = gen_ok & sync_ok
+    elif general_payload:
+        successful_macs = gen_ok
+    else:
+        successful_macs = sync_ok
 
     # --- 4b. Apply OS time/NTP when clock settings were changed ---
     time_keys_touched = any(k in general_payload for k in ("USE_NTP", "NTP_SERVER", "TIME_ZONE"))
@@ -618,7 +697,7 @@ async def bulk_config_update(req: BulkConfigRequest):
         db_ntp_by_mac = {}
         with Session(engine) as session:
             for mac in successful_macs:
-                mod = session.get(RobotModule, normalize_mac(mac)) or session.get(RobotModule, mac)
+                mod = find_robot_module(session, mac)
                 if mod:
                     db_ntp_by_mac[normalize_mac(mac)] = mod.use_ntp
 
@@ -650,7 +729,7 @@ async def bulk_config_update(req: BulkConfigRequest):
         # Persist Fleet DB flags for successful config targets
         with Session(engine) as session:
             for mac in successful_macs:
-                mod = session.get(RobotModule, normalize_mac(mac)) or session.get(RobotModule, mac)
+                mod = find_robot_module(session, mac)
                 if not mod:
                     continue
                 if use_ntp is not None:
@@ -659,14 +738,14 @@ async def bulk_config_update(req: BulkConfigRequest):
                     mod.ntp_server = ntp_server
                 session.add(mod)
             session.commit()
-        
+
     # --- 5. Restart Updated Nodes ---
     if successful_macs:
         # Give the file system a split second to flush writes
-        await asyncio.sleep(0.5) 
+        await asyncio.sleep(0.5)
         # Expect timeouts here as the service dies and resurrects
         await broadcast_to_nodes(list(successful_macs), "GET", "restart_service", timeout=1.5)
-        
+
     return {"status": "complete", "results": results}
 
 class ExperimentLaunchRequest(BaseModel):
@@ -1114,18 +1193,62 @@ async def sync_time_for_manual_nodes(req: BulkActionRequest):
 @router.post("/bulk/sync/test")
 async def bulk_sync_test(req: BulkSyncTestRequest):
     """Broadcasts test credentials to modules without saving them."""
-    payload = req.model_dump(exclude={"target_macs"})
-    
-    def get_test_payload(mac, state):
-        return payload
+    req_dict = {
+        k: v for k, v in req.model_dump(exclude={"target_macs"}, exclude_unset=True).items()
+        if v not in (None, "")
+    }
 
-    results = await broadcast_to_nodes(
-        req.target_macs, 
-        "POST", 
-        "sync/test", 
-        get_payload_fn=get_test_payload,
-        timeout=15.0 
-    )
+    inventory = {}
+    with Session(engine) as session:
+        for m in session.exec(select(RobotModule)).all():
+            inventory[normalize_mac(m.mac_address)] = {
+                "sync_remote_type": m.sync_remote_type,
+                "sync_host": m.sync_host,
+                "sync_port": m.sync_port,
+                "sync_user": m.sync_user,
+            }
+
+    test_payloads = {}
+    results = []
+    for mac in req.target_macs:
+        inv = inventory.get(normalize_mac(mac), {})
+        payload = dict(req_dict)
+        remote_type = payload.get("remote_type") or inv.get("sync_remote_type")
+        if remote_type not in ("sftp", "ftp"):
+            results.append({
+                "mac": mac,
+                "status": "error",
+                "message": "Login test is SSH/FTP only.",
+            })
+            continue
+        payload["remote_type"] = remote_type
+        if "host" not in payload and inv.get("sync_host"):
+            payload["host"] = inv["sync_host"]
+        if "user" not in payload and inv.get("sync_user"):
+            payload["user"] = inv["sync_user"]
+        if "port" not in payload and inv.get("sync_port") is not None:
+            payload["port"] = inv["sync_port"]
+        if "password" not in payload:
+            payload["password"] = "********"
+        if not payload.get("host") or not payload.get("user"):
+            results.append({
+                "mac": mac,
+                "status": "error",
+                "message": "Fill Host and Username once — this module has no saved SSH/FTP identity.",
+            })
+            continue
+        test_payloads[mac] = payload
+
+    if test_payloads:
+        def get_test_payload(mac, state):
+            return test_payloads[mac]
+        results.extend(await broadcast_to_nodes(
+            list(test_payloads.keys()),
+            "POST",
+            "sync/test",
+            get_payload_fn=get_test_payload,
+            timeout=15.0,
+        ))
     return {"status": "complete", "results": results}
 
 @router.post("/bulk/sync/trigger")

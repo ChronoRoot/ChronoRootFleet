@@ -275,21 +275,33 @@
         try {
             const res = await fetch('/api/commander/update', { method: 'POST' });
             const data = await res.json().catch(() => ({}));
-            let message = data.message || 'Update failed.';
-            const detail = data.detail;
-            if (typeof detail === 'string') {
-                message = detail;
-            } else if (detail && typeof detail === 'object') {
-                if (detail.message) message = detail.message;
-                else if (Array.isArray(detail)) {
-                    message = detail.map(d => d.msg || d.message || JSON.stringify(d)).join('; ');
-                }
-            }
-            if (!res.ok) {
-                showToast(`<i class="fas fa-exclamation-triangle"></i> ${message}`, 'danger');
+            const body = (data.detail && typeof data.detail === 'object' && !Array.isArray(data.detail))
+                ? Object.assign({}, data, data.detail)
+                : data;
+            const code = body.code || (body.result === false ? 'git_error' : (body.changed ? 'updated' : 'up_to_date'));
+            const labels = {
+                updated: 'Updated — restarting',
+                up_to_date: 'Already up to date',
+                network_error: 'Cannot reach Git remote',
+                authentication_error: 'Git authentication failed',
+                repository_error: 'Repository configuration error',
+                permission_error: 'Repository permission error',
+                timeout: 'Update timed out',
+                git_unavailable: 'Git unavailable',
+                git_error: 'Git update failed',
+            };
+            const label = labels[code] || (body.result === false ? 'Git update failed' : 'Update complete');
+            let message = body.message || (typeof body.detail === 'string' ? body.detail : '') || 'Update failed.';
+            const span = document.createElement('span');
+            span.textContent = message;
+            const detailHtml = span.innerHTML.replace(/\n/g, '<br>');
+            const html = `<strong>${label}</strong><br>${detailHtml}`;
+
+            if (!res.ok || body.result === false) {
+                showToast(`<i class="fas fa-exclamation-triangle"></i> ${html}`, 'danger');
                 return;
             }
-            showToast(`<i class="fas fa-check"></i> ${message}`, data.changed ? 'warning' : 'success');
+            showToast(`<i class="fas fa-check"></i> ${html}`, 'success');
         } catch (e) {
             console.error('Commander update error:', e);
             showToast('<i class="fas fa-exclamation-triangle"></i> Failed to update Fleet Commander.', 'danger');

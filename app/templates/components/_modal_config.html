@@ -12,7 +12,7 @@
         <input type="hidden" id="cfg-target-macs">
 
         <div class="alert alert-warning py-2 small mb-4 border-warning shadow-sm" id="cfg-bulk-warning" style="display: none;">
-            <i class="fas fa-exclamation-triangle"></i> <strong>Bulk Edit Mode:</strong> Only fields you explicitly change will be updated. Blank fields are ignored. Hardware topology is strictly read-only and managed on-device.
+            <i class="fas fa-exclamation-triangle"></i> <strong>Bulk Edit Mode:</strong> Only fields you explicitly change will be updated. Blank fields are ignored. Destination-only SSH/FTP saves reuse each module's stored host/user and the password already on the Pi.
         </div>
 
         <form id="config-form">
@@ -52,6 +52,7 @@
                                         <i class="fas fa-network-wired"></i> Test Connection
                                     </button>
                                 </div>
+                                <p class="small text-muted mb-3">Test checks SSH/FTP login only — not the folder. After saving, use Launch Sync to copy to the saved path.</p>
                                 <div class="row">
                                     <div class="col-md-8 form-group mb-2">
                                         <label class="small font-weight-bold mb-1">Host / IP</label>
@@ -120,41 +121,77 @@
 </div>
 
 <script>
+    function renderCfgResults(summaryText, summaryClass, results) {
+        const box = document.getElementById('cfg-alert-container');
+        const nodes = (typeof lastFleetNodes !== 'undefined' ? lastFleetNodes : []);
+        const esc = (value) => {
+            const span = document.createElement('span');
+            span.textContent = value == null ? '' : String(value);
+            return span.innerHTML;
+        };
+        const byMac = {};
+        (results || []).forEach(res => {
+            const prev = byMac[res.mac];
+            if (!prev || (prev.status === 'success' && res.status !== 'success')) {
+                byMac[res.mac] = res;
+            }
+        });
+        const items = Object.values(byMac).map(res => {
+            const node = nodes.find(n => n.mac === res.mac);
+            const name = (node && (node.hostname || node.raw_hostname)) || res.mac;
+            const ok = res.status === 'success';
+            const msg = res.message || (res.data && (res.data.error || res.data.message)) || '';
+            const badge = ok
+                ? '<span class="badge bg-success px-3 py-2"><i class="fas fa-check-circle me-1"></i> Success</span>'
+                : '<span class="badge bg-danger px-3 py-2"><i class="fas fa-exclamation-circle me-1"></i> Failed</span>';
+            const msgHtml = msg ? `<div class="text-muted small mt-1">${esc(msg)}</div>` : '';
+            return `<div class="list-group-item bg-white py-3">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
+                    <div class="me-3">
+                        <div class="font-weight-bold text-dark">${esc(name)}</div>
+                        <div class="text-muted small" style="font-family: monospace;">${esc(res.mac)}</div>
+                    </div>
+                    ${badge}
+                </div>
+                ${msgHtml}
+            </div>`;
+        }).join('');
+        box.innerHTML =
+            `<div class="alert ${summaryClass} border mb-3">${esc(summaryText)}</div>` +
+            (items ? `<div class="list-group shadow-sm mb-3">${items}</div>` : '');
+    }
+
     async function openConfigModal(mac = null, hostname = null) {
         document.getElementById('config-form').reset();
         document.getElementById('cfg-alert-container').innerHTML = '';
         let targetMacs = [];
-        
+
         if (mac) {
             targetMacs = [mac];
             document.getElementById('config-modal-title').innerHTML = `<i class="fas fa-cog"></i> Config: ${hostname}`;
             document.getElementById('cfg-bulk-warning').style.display = 'none';
-            
-            const btn = document.getElementById('btn-save-cfg');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fetching...';
-            new bootstrap.Modal(document.getElementById('configModal')).show();
-            
-            try {
-                const res = await fetch(`/api/node/${mac}/config`);
-                const data = await res.json();
-                if(data.TIME_ZONE) document.getElementById('cfg-TIME_ZONE').value = data.TIME_ZONE;
-                if(data.NTP_SERVER) document.getElementById('cfg-NTP_SERVER').value = data.NTP_SERVER; 
-                if(data.USE_NTP !== undefined) document.getElementById('cfg-USE_NTP').value = data.USE_NTP ? "true" : "false"; 
-                if(data.SYNC_INTERVAL) document.getElementById('cfg-SYNC_INTERVAL').value = data.SYNC_INTERVAL;
-                if(data.SYNC_REMOTE_TYPE) document.getElementById('cfg-remote_type').value = data.SYNC_REMOTE_TYPE;
-                if(data.SYNC_ENABLED !== undefined) document.getElementById('cfg-SYNC_ENABLED').value = data.SYNC_ENABLED ? "true" : "false";
-                
-            } catch (e) {
-                document.getElementById('cfg-alert-container').innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-paper-plane"></i> Dispatch to Fleet';
+
+            const node = (typeof lastFleetNodes !== 'undefined' ? lastFleetNodes : []).find(n => n.mac === mac);
+            if (node) {
+                if (node.ntp_server) document.getElementById('cfg-NTP_SERVER').value = node.ntp_server;
+                if (node.use_ntp !== undefined && node.use_ntp !== null) {
+                    document.getElementById('cfg-USE_NTP').value = node.use_ntp ? 'true' : 'false';
+                }
+                if (node.sync_interval) document.getElementById('cfg-SYNC_INTERVAL').value = node.sync_interval;
+                if (node.sync_remote_type) document.getElementById('cfg-remote_type').value = node.sync_remote_type;
+                if (node.sync_status && node.is_online && node.sync_status.sync_enabled !== undefined) {
+                    document.getElementById('cfg-SYNC_ENABLED').value = node.sync_status.sync_enabled ? 'true' : 'false';
+                }
+                if (node.sync_host) document.getElementById('cfg-host').value = node.sync_host;
+                if (node.sync_port) document.getElementById('cfg-port').value = node.sync_port;
+                if (node.sync_user) document.getElementById('cfg-user').value = node.sync_user;
+                if (node.sync_destination) document.getElementById('cfg-destination_path').value = node.sync_destination;
             }
+            new bootstrap.Modal(document.getElementById('configModal')).show();
         } else {
-            if(selectedMacs.size === 0) { 
-                showToast("Select modules first.", "warning"); 
-                return; 
+            if (selectedMacs.size === 0) {
+                showToast("Select modules first.", "warning");
+                return;
             }
             targetMacs = Array.from(selectedMacs);
             document.getElementById('config-modal-title').innerHTML = `<i class="fas fa-layer-group"></i> Bulk Config (${targetMacs.length} Nodes)`;
@@ -166,9 +203,8 @@
 
     async function submitConfiguration() {
         const btn = document.getElementById('btn-save-cfg');
-        const box = document.getElementById('cfg-alert-container');
         const payload = { target_macs: JSON.parse(document.getElementById('cfg-target-macs').value) };
-        
+
         const fields = ['TIME_ZONE', 'NTP_SERVER', 'SYNC_INTERVAL', 'remote_type', 'host', 'port', 'user', 'password', 'destination_path'];
         fields.forEach(f => {
             let val = document.getElementById('cfg-' + f).value.trim();
@@ -176,28 +212,38 @@
         });
 
         let syncE = document.getElementById('cfg-SYNC_ENABLED').value;
-        if(syncE) payload.SYNC_ENABLED = (syncE === "true");
+        if (syncE) payload.SYNC_ENABLED = (syncE === "true");
 
         let useNTP = document.getElementById('cfg-USE_NTP').value;
-        if(useNTP) payload.USE_NTP = (useNTP === "true");
+        if (useNTP) payload.USE_NTP = (useNTP === "true");
 
         btn.disabled = true;
         btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Broadcasting...';
-        box.innerHTML = '';
+        document.getElementById('cfg-alert-container').innerHTML = '';
 
         try {
             const res = await fetch('/api/fleet/bulk/config', {
                 method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
             });
             const result = await res.json();
-            if (result.status === "complete") {
-                box.innerHTML = `<div class="alert alert-success">Config dispatch complete. Modules are restarting.</div>`;
-                setTimeout(() => { bootstrap.Modal.getInstance(document.getElementById('configModal')).hide(); }, 1500);
-            } else {
-                box.innerHTML = `<div class="alert alert-warning">Partial failure occurred. Check console.</div>`;
+            const rows = result.results || [];
+            const failed = rows.filter(r => r.status !== 'success').length;
+            const ok = rows.filter(r => r.status === 'success').length;
+            let summary = 'Saved. Modules that succeeded are restarting so they pick up the new settings.';
+            let cls = 'alert-success';
+            if (!rows.length) {
+                summary = 'No settings were sent.';
+                cls = 'alert-light';
+            } else if (failed && !ok) {
+                summary = 'Config was not applied. Review each module below.';
+                cls = 'alert-danger';
+            } else if (failed) {
+                summary = 'Some modules failed. Review the list below. Successful modules are restarting.';
+                cls = 'alert-warning';
             }
-        } catch(e) {
-             box.innerHTML = `<div class="alert alert-danger">Network error: ${e.message}</div>`;
+            renderCfgResults(summary, cls, rows);
+        } catch (e) {
+            renderCfgResults('Network error: ' + e.message, 'alert-danger', []);
         } finally {
             btn.disabled = false;
             btn.innerHTML = '<i class="fas fa-paper-plane"></i> Dispatch to Fleet';
@@ -207,75 +253,61 @@
     async function runConfigTest() {
         const btn = document.getElementById('btn-test-cfg');
         const targetMacsStr = document.getElementById('cfg-target-macs').value;
-        
+
         if (!targetMacsStr) {
             showToast("No modules selected to test.", "info");
             return;
         }
-        
+
         const targetMacs = JSON.parse(targetMacsStr);
-
-        const connectionData = {
-            remote_type: document.getElementById('cfg-remote_type').value,
-            host: document.getElementById('cfg-host').value.trim(),
-            port: parseInt(document.getElementById('cfg-port').value) || null,
-            user: document.getElementById('cfg-user').value.trim(),
-            password: document.getElementById('cfg-password').value
-        };
-
-        if (!connectionData.remote_type || connectionData.remote_type === 'local') {
-            showToast("Testing is only available for SFTP/FTP connections. Ensure 'Protocol Type' is selected.", "info");
+        if (document.getElementById('cfg-remote_type').value === 'local') {
+            showToast("Testing is only available for SFTP/FTP connections.", "info");
             return;
         }
-        if (!connectionData.host || !connectionData.user) {
-            showToast("Host and Username are required to run a test.", "info");
-            return;
-        }
+
+        const connectionData = { target_macs: targetMacs };
+        const remoteType = document.getElementById('cfg-remote_type').value;
+        if (remoteType) connectionData.remote_type = remoteType;
+        const host = document.getElementById('cfg-host').value.trim();
+        if (host) connectionData.host = host;
+        const portVal = document.getElementById('cfg-port').value.trim();
+        if (portVal) connectionData.port = parseInt(portVal);
+        const user = document.getElementById('cfg-user').value.trim();
+        if (user) connectionData.user = user;
+        const password = document.getElementById('cfg-password').value;
+        if (password) connectionData.password = password;
 
         btn.disabled = true;
         btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing...';
 
-        // Calls the global testSyncConnection function defined in _table_fleet.html
-        if (typeof testSyncConnection === 'function') {
-            await testSyncConnection(targetMacs, connectionData);
-        } else {
-            showToast("Error: testSyncConnection function not found.", "info");
-        }
-
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-network-wired"></i> Test Connection';
-    }
-
-    async function testSyncConnection(macsArray, connectionData) {
         try {
-            const response = await fetch(`/api/fleet/bulk/sync/test`, {
+            const response = await fetch('/api/fleet/bulk/sync/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    target_macs: macsArray,
-                    ...connectionData
-                })
+                body: JSON.stringify(connectionData)
             });
-            
             const result = await response.json();
-            let successCount = 0;
-            let errors = [];
-            
-            result.results.forEach(res => {
-                if (res.status === 'success') successCount++;
-                else errors.push(`[${res.mac}] ${res.data?.error || res.message}`);
-            });
-            
-            if (errors.length > 0) {
-                showToast(`Test Failed on ${errors.length} nodes:\n\n${errors.join('\n')}`, "info");
-                return false;
-            } else {
-                showToast(`Connection successful on all ${successCount} nodes! You can now save.`, "info");
-                return true;
+            const rows = result.results || [];
+            const failed = rows.filter(r => r.status !== 'success').length;
+            const ok = rows.filter(r => r.status === 'success').length;
+            let summary = 'Login succeeded. This does not check the folder — use Launch Sync after saving to verify the path.';
+            let cls = 'alert-success';
+            if (!rows.length) {
+                summary = 'No test results returned.';
+                cls = 'alert-light';
+            } else if (failed && !ok) {
+                summary = 'Login test failed. Review each module below.';
+                cls = 'alert-danger';
+            } else if (failed) {
+                summary = 'Login succeeded on some modules only. This does not check the folder.';
+                cls = 'alert-warning';
             }
-        } catch(e) {
-            showToast("Network failure trying to run test.", "info");
-            return false;
+            renderCfgResults(summary, cls, rows);
+        } catch (e) {
+            renderCfgResults('Network failure trying to run test.', 'alert-danger', []);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-network-wired"></i> Test Connection';
         }
     }
 </script>

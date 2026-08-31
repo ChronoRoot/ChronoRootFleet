@@ -799,9 +799,12 @@
         }
         
         const isDanger = action === 'REBOOT' || action === 'CANCEL_SYNC';
-        let confirmMsg = action === 'CANCEL_SYNC'
-            ? `Are you sure you want to kill the active network transfer on ${selectedMacs.size} modules?`
-            : `Send ${action} command to ${selectedMacs.size} modules?`;
+        let confirmMsg = `Send ${action} command to ${selectedMacs.size} modules?`;
+        if (action === 'CANCEL_SYNC') {
+            confirmMsg = `Kill the active transfer on ${selectedMacs.size} modules? This also turns auto-sync OFF. Re-enable it in Configure if you still want scheduled copies.`;
+        } else if (action === 'SYNC') {
+            confirmMsg = `Copy working files to the saved destination on ${selectedMacs.size} modules? This is the folder check after a path change.`;
+        }
         const confirmed = await asyncConfirm('Confirm Bulk Action', confirmMsg, isDanger);
         if (!confirmed) return;
         
@@ -850,7 +853,7 @@
 
     // --- SYNC ACTIONS ---
     async function triggerSingleSync(mac, hostname) {
-        const confirmed = await asyncConfirm('Confirm Sync', `Trigger an immediate network transfer on ${hostname}?`);
+        const confirmed = await asyncConfirm('Confirm Sync', `Copy working files on ${hostname} to its saved destination? This is the folder check after a path change.`);
         if (!confirmed) return;
         
         try {
@@ -875,7 +878,7 @@
     }
 
     async function cancelSingleSync(mac, hostname) {
-        const confirmed = await asyncConfirm('Confirm Abort', `Are you sure you want to kill the active network transfer on ${hostname}?`, true);
+        const confirmed = await asyncConfirm('Confirm Abort', `Kill the active transfer on ${hostname}? This also turns auto-sync OFF. Re-enable it in Configure if you still want scheduled copies.`, true);
         if (!confirmed) return;
         
         try {

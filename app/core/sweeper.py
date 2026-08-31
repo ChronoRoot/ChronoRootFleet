@@ -563,6 +563,16 @@ async def execute_discovery_sweep() -> Dict[str, Any]:
                         mod.ntp_server = ntp_server
                     session.add(mod)
 
+                sync_type = node_cfg.get("SYNC_REMOTE_TYPE")
+                if sync_type:
+                    mod.sync_remote_type = sync_type
+                sync_interval = node_cfg.get("SYNC_INTERVAL")
+                if sync_interval:
+                    try:
+                        mod.sync_interval = int(sync_interval)
+                    except (TypeError, ValueError):
+                        pass
+
                 record_poll_success(mac, payload)
 
             _merge_history_into_db(session, history_map)

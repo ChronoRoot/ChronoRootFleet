@@ -174,6 +174,17 @@ def digest_node_state(
         hardware_desc = "Unregistered Node"
         time_mode = "Unknown"
 
+    sync_inventory = {
+        "sync_remote_type": db_mod.sync_remote_type if db_mod else None,
+        "sync_host": db_mod.sync_host if db_mod else None,
+        "sync_port": db_mod.sync_port if db_mod else None,
+        "sync_user": db_mod.sync_user if db_mod else None,
+        "sync_destination": db_mod.sync_destination if db_mod else None,
+        "sync_interval": db_mod.sync_interval if db_mod else None,
+        "use_ntp": db_mod.use_ntp if db_mod else None,
+        "ntp_server": db_mod.ntp_server if db_mod else None,
+    }
+
     stale_fields = {
         "telemetry_stale": False,
         "telemetry_age_seconds": None,
@@ -234,6 +245,7 @@ def digest_node_state(
                 "last_success": "Never",
                 "last_error": None,
             },
+            **sync_inventory,
             **stale_fields,
         }
 
@@ -402,6 +414,7 @@ def digest_node_state(
         "next_pic_time": next_pic[11:19] if next_pic != "None" else "None",
         "uptime": raw.get("uptime", "Unknown"),
         "sync_status": sync_status,
+        **sync_inventory,
         "telemetry_stale": telemetry_stale,
         "telemetry_age_seconds": telemetry_age_seconds,
         "last_telemetry_at": last_telemetry_at,

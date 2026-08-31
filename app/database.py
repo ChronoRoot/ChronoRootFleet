@@ -1,6 +1,7 @@
 import os
 from typing import Optional, List
 from datetime import datetime
+from sqlalchemy import inspect, text
 from sqlmodel import SQLModel, Field, Relationship, create_engine, Session, select
 
 # --- MODELS ---
@@ -18,6 +19,15 @@ class RobotModule(SQLModel, table=True):
     
     selector_type: str = Field(default="UNKNOWN")
     camera_type: str = Field(default="UNKNOWN")
+
+    # Last-known sync identity (Pi never returns these; password stays on the module)
+    sync_remote_type: Optional[str] = Field(default=None)
+    sync_host: Optional[str] = Field(default=None)
+    sync_port: Optional[int] = Field(default=None)
+    sync_user: Optional[str] = Field(default=None)
+    sync_destination: Optional[str] = Field(default=None)
+    sync_interval: Optional[int] = Field(default=None)
+
     experiment_runs: List["ExperimentRun"] = Relationship(back_populates="module")
 
 class ExperimentalBatch(SQLModel, table=True):
@@ -58,6 +68,19 @@ engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread"
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
+    table_name = RobotModule.__tablename__
+    existing = {col["name"] for col in inspect(engine).get_columns(table_name)}
+    with engine.begin() as conn:
+        for name, coltype in (
+            ("sync_remote_type", "VARCHAR"),
+            ("sync_host", "VARCHAR"),
+            ("sync_port", "INTEGER"),
+            ("sync_user", "VARCHAR"),
+            ("sync_destination", "VARCHAR"),
+            ("sync_interval", "INTEGER"),
+        ):
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {coltype}"))
 
 
 def find_robot_module(session: Session, mac: str) -> Optional[RobotModule]:

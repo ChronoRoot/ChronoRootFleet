@@ -2,6 +2,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.core import state as fleet_state
@@ -30,17 +31,16 @@ class CommanderNetworkRequest(BaseModel):
 @router.post("/update")
 async def update_commander_software():
     """Pull latest Fleet Commander code via git; restart service if changed."""
-    success, message, changed = run_git_update()
-    if not success:
-        raise HTTPException(
-            status_code=400,
-            detail={"result": False, "message": message, "changed": False},
-        )
-
-    if changed:
+    payload = run_git_update()
+    if payload.get("result") and payload.get("changed"):
         schedule_service_restart()
 
-    return {"result": True, "message": message, "changed": changed}
+    status_code = 200 if payload.get("result") else 400
+    if payload.get("code") == "timeout":
+        status_code = 504
+    elif payload.get("code") == "git_unavailable":
+        status_code = 500
+    return JSONResponse(content=payload, status_code=status_code)
 
 
 @router.get("/time")
