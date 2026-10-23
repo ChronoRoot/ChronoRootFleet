@@ -16,6 +16,8 @@ from app.core.state import (
     DISCOVERY_MAX_CONCURRENT,
     effective_poll_interval,
     effective_max_concurrent,
+    first_usable_ip,
+    is_usable_module_ip,
     apply_poll_results,
     record_poll_success,
     normalize_mac,
@@ -113,11 +115,15 @@ def _build_poll_targets(
     unique_ips: List[str] = []
     ip_to_db_mac: Dict[str, str] = {}
     seen_ips: Dict[str, str] = {}
+    skipped_unusable = 0
 
     for m in known_modules:
         if not m.ip_address:
             continue
         ip = m.ip_address.strip()
+        if not is_usable_module_ip(ip):
+            skipped_unusable += 1
+            continue
         mac = normalize_mac(m.mac_address)
         if ip in seen_ips and seen_ips[ip] != mac:
             logger.warning(
@@ -132,7 +138,49 @@ def _build_poll_targets(
             unique_ips.append(ip)
             ip_to_db_mac[ip] = mac
 
+    if skipped_unusable:
+        logger.warning(
+            "Skipping %d module(s) whose stored address is not usable "
+            "(loopback or otherwise not a LAN address). "
+            "Run Discover Nodes to record the address that answers.",
+            skipped_unusable,
+        )
+
     return unique_ips, ip_to_db_mac
+
+
+def stamp_reachable_ip(
+    payload: Dict[str, Any],
+    contacted_ip: str,
+) -> Optional[Dict[str, Any]]:
+    """Keep the address that answered. Never publish 127.0.0.1 as the module IP."""
+    identity = payload.get("identity") or {}
+    reported = identity.get("ip")
+    chosen = first_usable_ip(contacted_ip, reported)
+    if not chosen:
+        return None
+    if isinstance(reported, str) and reported.strip() == chosen:
+        return payload
+    if not is_usable_module_ip(reported):
+        logger.warning(
+            "Module %s at %s reported unusable address %r",
+            identity.get("mac"),
+            chosen,
+            reported,
+        )
+    updated = dict(payload)
+    updated["identity"] = dict(identity)
+    updated["identity"]["ip"] = chosen
+    return updated
+
+
+def _sanitize_poll_result(result: PollResult) -> PollResult:
+    if not result.payload or "identity" not in result.payload:
+        return result
+    stamped = stamp_reachable_ip(result.payload, result.ip)
+    if stamped is None:
+        return PollResult(ip=result.ip, payload=None, error="UnusableIP")
+    return PollResult(ip=result.ip, payload=stamped, error=None)
 
 
 async def _poll_one_module(
@@ -232,14 +280,24 @@ def _merge_history_into_db(session: Session, history_map: Dict[str, Any]) -> Non
 
 def _sync_payload_to_db(session: Session, payload: Dict[str, Any]) -> None:
     mac = normalize_mac(payload["identity"]["mac"])
-    ip = payload["identity"]["ip"]
+    reported_ip = payload["identity"].get("ip")
+    reachable_ip = reported_ip.strip() if is_usable_module_ip(reported_ip) else None
 
     mod = find_robot_module(session, mac)
     db_mac = mod.mac_address if mod else mac
 
     if mod:
         mod.last_seen = datetime.utcnow()
-        mod.ip_address = ip
+        if reachable_ip:
+            mod.ip_address = reachable_ip
+        else:
+            logger.warning(
+                "Refusing to store unusable address %r for %s",
+                reported_ip,
+                mac,
+            )
+            if is_usable_module_ip(mod.ip_address):
+                reachable_ip = mod.ip_address.strip()
         session.add(mod)
 
     active_local_ids = list(payload.get("jobs", {}).keys())
@@ -276,7 +334,8 @@ def _sync_payload_to_db(session: Session, payload: Dict[str, Any]) -> None:
             db_run.status = "FINISHED"
             db_run.taken_so_far = db_run.expected_total
             session.add(db_run)
-            asyncio.create_task(trigger_targeted_history_sync(db_mac, ip))
+            if reachable_ip:
+                asyncio.create_task(trigger_targeted_history_sync(db_mac, reachable_ip))
 
 
 async def run_fast_poll_cycle() -> PollCycleStats:
@@ -314,6 +373,7 @@ async def run_fast_poll_cycle() -> PollCycleStats:
     )
     async with httpx.AsyncClient(limits=limits, timeout=poll_http_timeout()) as client:
         results = await _fetch_all_modules(client, ip_to_db_mac)
+    results = [_sanitize_poll_result(r) for r in results]
 
     polled_ips = _results_to_polled_ips(results, ip_to_db_mac)
     apply_poll_results(polled_ips, ip_to_db_mac)
@@ -452,7 +512,19 @@ async def execute_discovery_sweep() -> Dict[str, Any]:
                 *[_bounded_fetch(client, sem, ip, "status", discover_timeout) for ip in ips]
             )
         results = [(ip, data) for ip, data, _ in raw]
-        active_payloads = [data for ip, data in results if data and "identity" in data]
+        active_payloads = []
+        for scan_ip, data in results:
+            if not data or "identity" not in data:
+                continue
+            stamped = stamp_reachable_ip(data, scan_ip)
+            if stamped is None:
+                logger.warning(
+                    "Discovery skipping %s: no usable address (reported %r)",
+                    scan_ip,
+                    (data.get("identity") or {}).get("ip"),
+                )
+                continue
+            active_payloads.append(stamped)
 
         update_discovery(
             phase="enriching",
@@ -498,7 +570,15 @@ async def execute_discovery_sweep() -> Dict[str, Any]:
             }
             for payload in active_payloads:
                 mac = normalize_mac(payload["identity"]["mac"])
-                ip = payload["identity"]["ip"]
+                ip = payload["identity"].get("ip")
+                if not is_usable_module_ip(ip):
+                    logger.warning(
+                        "Refusing to register %s with unusable address %r",
+                        mac,
+                        ip,
+                    )
+                    continue
+                ip = ip.strip()
                 node_cfg = config_map.get(ip, {})
                 sel_type = node_cfg.get("SELECTOR_TYPE", "UNKNOWN")
                 cam_type = node_cfg.get("CAMERA_TYPE", "UNKNOWN")

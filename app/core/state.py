@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import re
 from datetime import datetime, timedelta
@@ -87,6 +88,31 @@ def persist_target_subnet(subnet: str) -> str:
         fh.writelines(lines)
 
     return set_target_subnet(subnet)
+
+
+def is_usable_module_ip(ip: Optional[str]) -> bool:
+    """True for an address the master can poll. Loopback is never that address."""
+    if not isinstance(ip, str):
+        return False
+    try:
+        addr = ipaddress.IPv4Address(ip.strip())
+    except (ipaddress.AddressValueError, ValueError):
+        return False
+    return not (
+        addr.is_loopback
+        or addr.is_unspecified
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+    )
+
+
+def first_usable_ip(*candidates: Optional[str]) -> Optional[str]:
+    """First candidate that is a real LAN address, or None."""
+    for ip in candidates:
+        if is_usable_module_ip(ip):
+            return ip.strip()
+    return None
 
 
 TARGET_SUBNET_BASE = resolve_target_subnet()
@@ -418,18 +444,20 @@ def resolve_proxy_target(
     """
     mac = normalize_mac(mac)
     if mac in LIVE_FLEET_STATE:
-        return LIVE_FLEET_STATE[mac]["identity"]["ip"], None
+        ip = first_usable_ip(LIVE_FLEET_STATE[mac]["identity"].get("ip"))
+        if ip:
+            return ip, None
 
     entry = MODULE_PRESENCE.get(mac)
     if entry and entry.get("miss_count", 0) > 0:
         payload = entry.get("payload", {})
-        ip = payload.get("identity", {}).get("ip")
+        ip = first_usable_ip(payload.get("identity", {}).get("ip"))
         if ip:
             return ip, "Module in grace period — telemetry may be stale."
 
-    if db_ip and db_last_seen:
+    if first_usable_ip(db_ip) and db_last_seen:
         cutoff = datetime.utcnow() - timedelta(minutes=PROXY_DB_FALLBACK_MINUTES)
         if db_last_seen >= cutoff:
-            return db_ip, "Module recently seen — using last known IP."
+            return db_ip.strip(), "Module recently seen — using last known IP."
 
     return None, None

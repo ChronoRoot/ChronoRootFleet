@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Literal
 from app.database import RobotModule
+from app.core.state import first_usable_ip
 
 HealthClass = Literal["ok", "untested", "failed"]
 
@@ -159,7 +160,9 @@ def digest_node_state(
     telemetry_age_seconds = meta.get("telemetry_age_seconds")
     last_telemetry_at = meta.get("last_telemetry_at")
 
-    ip = raw.get("identity", {}).get("ip", db_mod.ip_address if db_mod else "Unknown")
+    reported_ip = (raw.get("identity") or {}).get("ip")
+    stored_ip = db_mod.ip_address if db_mod else None
+    ip = first_usable_ip(reported_ip, stored_ip) or "Unknown"
     hostname = raw.get("identity", {}).get("hostname", db_mod.hostname if db_mod else "Unknown")
     display_name = db_mod.alias if db_mod and db_mod.alias else hostname
 
