@@ -62,7 +62,8 @@ async def set_commander_time(req: CommanderTimeRequest):
         ntp_server=req.ntp_server,
     )
     if not success:
-        raise HTTPException(status_code=500, detail=message)
+        status_code = 422 if str(message).startswith("Unknown timezone") else 500
+        raise HTTPException(status_code=status_code, detail=message)
 
     status = get_commander_time_status()
     return {"result": True, "message": message, **status}

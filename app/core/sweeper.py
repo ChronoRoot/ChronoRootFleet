@@ -207,26 +207,6 @@ def _summarize_poll_results(results: List[PollResult]) -> Tuple[int, Dict[str, i
     return responded, errors, failed_ips
 
 
-async def _push_manual_time_sync(ip: str, date_str: str) -> None:
-    client = HTTP_CLIENT
-    if client is None:
-        async with httpx.AsyncClient() as tmp:
-            await tmp.post(
-                f"http://{ip}/api/config/time",
-                json={"mode": "manual", "date": date_str},
-                timeout=2.0,
-            )
-        return
-    try:
-        await client.post(
-            f"http://{ip}/api/config/time",
-            json={"mode": "manual", "date": date_str},
-            timeout=2.0,
-        )
-    except Exception as e:
-        logger.debug("Manual time sync failed for %s: %s", ip, e)
-
-
 def _merge_history_into_db(session: Session, history_map: Dict[str, Any]) -> None:
     for ip, history_data in history_map.items():
         for local_exp_id, job_data in history_data.items():
@@ -261,18 +241,6 @@ def _sync_payload_to_db(session: Session, payload: Dict[str, Any]) -> None:
         mod.last_seen = datetime.utcnow()
         mod.ip_address = ip
         session.add(mod)
-
-        if not mod.use_ntp:
-            sys_time_str = payload.get("system_time")
-            if sys_time_str and sys_time_str != "Unknown":
-                try:
-                    node_time = datetime.strptime(sys_time_str, "%Y-%m-%d %H:%M:%S")
-                    drift = abs((datetime.now() - node_time).total_seconds())
-                    if drift > 15:
-                        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        asyncio.create_task(_push_manual_time_sync(ip, date_str))
-                except Exception:
-                    pass
 
     active_local_ids = list(payload.get("jobs", {}).keys())
 

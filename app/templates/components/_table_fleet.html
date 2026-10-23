@@ -656,12 +656,20 @@
 
             let nodesList = Array.isArray(rawData) ? rawData : (rawData.nodes || []);
             let masterTime = rawData.master_time || "N/A";
-
-            if (document.getElementById('last-sync-time')) {
-                document.getElementById('last-sync-time').innerHTML = `
-                    <span class="text-muted me-3" style="margin-right: 15px;">Last scan: ${new Date().toLocaleTimeString()}</span>
-                    <span class="badge bg-primary text-white px-2 py-1 shadow-sm"><i class="fas fa-server"></i> Master Time: ${masterTime}</span>
-                `;
+            const masterTimeEl = document.getElementById('master-time-value');
+            const masterNtpEl = document.getElementById('master-ntp-status');
+            const lastScanEl = document.getElementById('last-sync-time');
+            if (masterTimeEl) masterTimeEl.textContent = masterTime;
+            if (masterNtpEl) {
+                const reachable = rawData.master_ntp_reachable === true;
+                masterNtpEl.textContent = reachable ? 'NTP reachable' : 'NTP unreachable';
+                masterNtpEl.className = reachable
+                    ? 'badge bg-success align-middle'
+                    : 'badge bg-warning text-dark align-middle';
+                masterNtpEl.style.fontSize = '0.75rem';
+            }
+            if (lastScanEl) {
+                lastScanEl.textContent = 'Last scan: ' + new Date().toLocaleTimeString();
             }
 
             let counts = { 'ALL': 0, 'RUNNING': 0, 'IDLE': 0, 'OFFLINE': 0, 'ATTENTION': 0 };

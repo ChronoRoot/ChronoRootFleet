@@ -11,7 +11,7 @@ Central orchestration hub for the [ChronoRoot](https://chronoroot.github.io/) au
 * **On-demand discovery:** A full subnet sweep (`.1`–`.254`) registers new modules and backfills experiment history. Trigger via the **Discover** button or `POST /api/fleet/discover`.
 * **Zero-touch reverse proxy:** Access any edge node's native web UI through the dashboard. FastAPI middleware tunnels traffic (including static assets and video streams) without modifying edge software.
 * **Global batch orchestration:** Launch synchronized time-lapse experiments with strict pre-flight checks for storage, camera availability, and schedule conflicts.
-* **Autonomous time synchronization:** Detects clock drift on manual-time nodes and pushes master time to align phenotyping timestamps.
+* **Clock comparison:** Each module is reported as synced or drifting against the commander clock. The commander does not change a module clock unless a person dispatches that action.
 * **Bulk fleet management:** Push SFTP/FTP/Rclone configs, trigger background transfers, run diagnostics, mass reboot, or batch **software updates** (`git pull` on modules).
 * **Commander self-service:** Update the Fleet Commander itself via git pull, and change the host NTP server or manual clock from the dashboard (buttons next to **Discover Nodes**).
 * **Offline UI assets:** Bootstrap 5 and Font Awesome are vendored under `app/static/vendor/` so the dashboard works on isolated networks without CDN access.
@@ -195,7 +195,7 @@ Create `/etc/systemd/system/fleetcontrol.service` pointing `WorkingDirectory` an
 
 ### Fleet operations (triage)
 
-The home page lists all registered modules. Storage warnings, camera faults, and connectivity issues are surfaced automatically. Use bulk actions to sync time, push configs, update module software, or reboot selected nodes.
+The home page lists all registered modules. Storage warnings, camera faults, and connectivity issues are surfaced automatically. Use bulk actions to push configs, update module software, or reboot selected nodes. Module clocks change only when a person dispatches time from Configure or the bulk time API.
 
 Next to **Discover Nodes**:
 

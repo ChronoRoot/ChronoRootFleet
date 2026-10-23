@@ -94,8 +94,10 @@
                                     </select>
                                 </div>
                                 <div class="col-md-4 form-group mb-0">
-                                    <label class="small text-muted text-uppercase font-weight-bold mb-1">Time Zone</label>
-                                    <input type="text" class="form-control form-control-sm cfg-input" id="cfg-TIME_ZONE" placeholder="e.g. Europe/Paris">
+                                    <label class="small text-muted text-uppercase font-weight-bold mb-1">UTC offset</label>
+                                    <select class="form-control form-control-sm cfg-input" id="cfg-TIME_ZONE">
+                                        <option value="">-- No Change --</option>
+                                    </select>
                                 </div>
                                 <div class="col-md-4 form-group mb-0">
                                     <label class="small text-muted text-uppercase font-weight-bold mb-1">NTP Server (Optional)</label>
@@ -308,6 +310,18 @@
         } finally {
             btn.disabled = false;
             btn.innerHTML = '<i class="fas fa-network-wired"></i> Test Connection';
+        }
+    }
+
+    const utcOffsetSelect = document.getElementById('cfg-TIME_ZONE');
+    if (utcOffsetSelect && utcOffsetSelect.options.length === 1) {
+        for (let hours = -12; hours <= 14; hours += 1) {
+            const sign = hours >= 0 ? '+' : '-';
+            const label = 'UTC' + sign + String(Math.abs(hours)).padStart(2, '0') + ':00';
+            const option = document.createElement('option');
+            option.value = label;
+            option.textContent = label;
+            utcOffsetSelect.appendChild(option);
         }
     }
 </script>

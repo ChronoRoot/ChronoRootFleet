@@ -20,6 +20,8 @@ from app.core.state import (
     get_poll_diagnostics,
     count_presence_grace_modules,
 )
+from app.core.fixed_offsets import resolve_time_zone
+from app.core.system_ops import commander_ntp_reachable
 from app.core.transformers import digest_node_state 
 
 router = APIRouter(prefix="/api/fleet", tags=["Fleet Orchestration"])
@@ -170,6 +172,7 @@ async def get_digested_fleet_state():
     return JSONResponse(
         content={
             "master_time": master_time_obj.strftime("%Y-%m-%d %H:%M:%S"),
+            "master_ntp_reachable": commander_ntp_reachable(),
             "nodes": digested_list,
         },
         headers={"Cache-Control": "no-store"},
@@ -541,10 +544,28 @@ async def restart_updated_modules(req: AuthorizedModuleActionRequest):
     return {"status": "complete", "results": results}
 
 
+def _require_utc_offset(timezone: Optional[str]) -> Optional[str]:
+    """Return the canonical UTC label, or raise if a new city zone was sent."""
+    if timezone is None:
+        return None
+    resolved = resolve_time_zone(timezone)
+    if resolved is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "TIME_ZONE must be a UTC offset such as UTC+02:00 or UTC-03:00."
+            ),
+        )
+    return resolved["stored"]
+
+
 @router.post("/bulk/time")
 async def bulk_time_sync(req: BulkTimeSyncRequest):
+    stored_zone = _require_utc_offset(req.timezone)
     base_payload = req.model_dump(exclude={"target_macs", "date_str"}, exclude_unset=True)
-    
+    if stored_zone:
+        base_payload["timezone"] = stored_zone
+
     if req.mode == "manual" and not req.date_str:
         base_payload["date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     elif req.date_str:
@@ -579,6 +600,8 @@ async def bulk_config_update(req: BulkConfigRequest):
         k: v for k, v in req.model_dump(exclude={"target_macs"}, exclude_unset=True).items()
         if v != ""
     }
+    if req_dict.get("TIME_ZONE"):
+        req_dict["TIME_ZONE"] = _require_utc_offset(req_dict["TIME_ZONE"])
 
     # --- 1. Map General System Keys ---
     general_keys = ["TIME_ZONE", "NTP_SERVER", "USE_NTP"]

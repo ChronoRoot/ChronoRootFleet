@@ -24,8 +24,8 @@
             <input type="text" class="form-control form-control-sm" id="cmd-ntp-server" placeholder="pool.ntp.org">
           </div>
           <div class="mb-3">
-            <label class="small text-muted text-uppercase font-weight-bold mb-1" for="cmd-timezone">Timezone</label>
-            <input type="text" class="form-control form-control-sm" id="cmd-timezone" placeholder="Europe/Paris">
+            <label class="small text-muted text-uppercase font-weight-bold mb-1" for="cmd-timezone">UTC offset</label>
+            <select class="form-select form-select-sm" id="cmd-timezone"></select>
           </div>
           <div class="mb-3" id="cmd-manual-date-group" style="display: none;">
             <label class="small text-muted text-uppercase font-weight-bold mb-1" for="cmd-manual-date">Date &amp; Time</label>
@@ -77,6 +77,26 @@
         if (ntpGroup) ntpGroup.style.display = mode === 'network' ? 'block' : 'none';
     }
 
+    function fillUtcOffsetSelect(select, current) {
+        if (!select) return;
+        select.innerHTML = '';
+        for (let hours = -12; hours <= 14; hours += 1) {
+            const sign = hours >= 0 ? '+' : '-';
+            const label = 'UTC' + sign + String(Math.abs(hours)).padStart(2, '0') + ':00';
+            const option = document.createElement('option');
+            option.value = label;
+            option.textContent = label;
+            select.appendChild(option);
+        }
+        if (current && !Array.from(select.options).some(option => option.value === current)) {
+            const legacy = document.createElement('option');
+            legacy.value = current;
+            legacy.textContent = current + ' (current)';
+            select.insertBefore(legacy, select.firstChild);
+        }
+        if (current) select.value = current;
+    }
+
     function pad2(n) { return String(n).padStart(2, '0'); }
 
     function toDatetimeLocalValue(dateObj) {
@@ -102,7 +122,7 @@
             badge.className = data.mode === 'network' ? 'ms-2 badge bg-info' : 'ms-2 badge bg-warning text-dark';
             document.getElementById('cmd-time-mode').value = data.mode || 'manual';
             document.getElementById('cmd-ntp-server').value = data.ntp_server || 'pool.ntp.org';
-            document.getElementById('cmd-timezone').value = data.timezone || '';
+            fillUtcOffsetSelect(document.getElementById('cmd-timezone'), data.timezone || 'UTC+00:00');
             document.getElementById('cmd-manual-date').value = toDatetimeLocalValue(new Date());
             toggleCommanderManualDate();
             const modal = new bootstrap.Modal(document.getElementById('commanderTimeModal'));

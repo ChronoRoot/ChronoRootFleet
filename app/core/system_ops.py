@@ -349,7 +349,24 @@ def apply_system_time_config(
             )
 
         if timezone:
-            _run_host([*prefix, timedatectl, "set-timezone", timezone], check=True)
+            from app.core.fixed_offsets import display_zone, resolve_time_zone
+
+            current_os = _timedatectl_show().get("Timezone")
+            resolved = resolve_time_zone(timezone, current=current_os)
+            if resolved is None and current_os:
+                resolved = resolve_time_zone(timezone, current=display_zone(current_os))
+            if resolved is None:
+                return (
+                    False,
+                    (
+                        "Unknown timezone: %s. Use a UTC offset such as "
+                        "UTC+02:00 or UTC-03:00." % timezone
+                    ),
+                )
+            _run_host(
+                [*prefix, timedatectl, "set-timezone", resolved["os_name"]],
+                check=True,
+            )
             if "TZ" in os.environ:
                 del os.environ["TZ"]
             time.tzset()
@@ -439,6 +456,40 @@ def _timedatectl_show() -> Dict[str, str]:
     return props
 
 
+_NTP_PROBE_TTL_SECONDS = 60
+_ntp_probe_cache: Dict[str, Any] = {"server": None, "at": 0.0, "reachable": False}
+
+
+def commander_ntp_reachable(server: Optional[str] = None) -> bool:
+    """UDP/123 reachability of the commander NTP server, cached for 60 seconds."""
+    target = server or _read_timesyncd_ntp_server() or "pool.ntp.org"
+    now = time.time()
+    if (
+        _ntp_probe_cache["server"] == target
+        and now - float(_ntp_probe_cache["at"]) < _NTP_PROBE_TTL_SECONDS
+    ):
+        return bool(_ntp_probe_cache["reachable"])
+
+    reachable = False
+    client = None
+    try:
+        client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client.settimeout(2.0)
+        client.sendto(b"\x1b" + 47 * b"\0", (target, 123))
+        client.recvfrom(1024)
+        reachable = True
+    except OSError:
+        reachable = False
+    finally:
+        if client is not None:
+            client.close()
+
+    _ntp_probe_cache["server"] = target
+    _ntp_probe_cache["at"] = now
+    _ntp_probe_cache["reachable"] = reachable
+    return reachable
+
+
 def get_commander_time_status() -> Dict[str, Any]:
     """Snapshot of the commander host clock / NTP configuration."""
     props = _timedatectl_show()
@@ -461,12 +512,16 @@ def get_commander_time_status() -> Dict[str, Any]:
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 pass
 
-    timezone = props.get("Timezone") or time.tzname[0] or "UTC"
+    from app.core.fixed_offsets import display_zone
+
+    timezone = display_zone(props.get("Timezone") or time.tzname[0] or "UTC")
+    ntp_server = _read_timesyncd_ntp_server()
     return {
         "local_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "timezone": timezone,
         "ntp_enabled": ntp_enabled,
-        "ntp_server": _read_timesyncd_ntp_server(),
+        "ntp_server": ntp_server,
+        "ntp_reachable": commander_ntp_reachable(ntp_server),
         "mode": "network" if ntp_enabled else "manual",
     }
 
