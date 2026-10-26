@@ -267,10 +267,31 @@
         });
     }
 
-    function formatNextCaptureRelative(value) {
-        const parsed = parseFleetDateTime(value);
-        if (!parsed) return 'Unknown';
-        const diffMs = parsed.getTime() - Date.now();
+    // Wall-clock math only. Module strings have no offset; new Date() would
+    // read them in the browser's zone and shift the countdown.
+    function naiveWallClockMs(value, dateSource) {
+        if (!value || value === 'Unknown' || value === 'None' || value === 'N/A') return null;
+        const raw = value.toString().trim();
+        const full = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+        if (full) {
+            return Date.UTC(+full[1], +full[2] - 1, +full[3], +full[4], +full[5], +(full[6] || 0));
+        }
+        const timeOnly = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+        const base = dateSource ? naiveWallClockMs(dateSource) : null;
+        if (!timeOnly || base == null) return null;
+        const dt = new Date(base);
+        dt.setUTCHours(+timeOnly[1], +timeOnly[2], +(timeOnly[3] || 0), 0);
+        if (dt.getTime() < base) dt.setUTCDate(dt.getUTCDate() + 1);
+        return dt.getTime();
+    }
+
+    function formatNextCaptureRelative(value, moduleNow, ageSeconds) {
+        const targetMs = naiveWallClockMs(value, moduleNow);
+        const nowMs = naiveWallClockMs(moduleNow);
+        if (targetMs == null || nowMs == null) return 'Unknown';
+        const age = Number(ageSeconds);
+        const adjustedNow = nowMs + (Number.isFinite(age) && age > 0 ? age * 1000 : 0);
+        const diffMs = targetMs - adjustedNow;
         if (diffMs <= 0) return 'now';
 
         const totalMinutes = Math.ceil(diffMs / 60000);
@@ -486,7 +507,11 @@
             const progressText = node.job_status === 'SCHEDULED' ? 'Waiting to start...' : `${roundsTaken} of ${roundsExpected} capture rounds`;
             const startText = formatFleetDateTime(node.job_start);
             const endText = formatFleetDateTime(node.job_end);
-            const nextCaptureText = formatNextCaptureRelative(node.next_pic_at || node.next_pic_time);
+            const nextCaptureText = formatNextCaptureRelative(
+                node.next_pic_at || node.next_pic_time,
+                node.system_time,
+                node.telemetry_age_seconds
+            );
             const mismatchBorder = jobDetail.has_camera_mismatch ? 'border-start border-warning border-3 ps-2' : '';
             jobHtml = `
                 <div class="${mismatchBorder}">
