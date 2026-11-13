@@ -720,7 +720,12 @@
                     if (searchQuery) {
                         const nodeName = normalizeSortText(node.hostname);
                         const nodeDesc = normalizeSortText(node.description);
-                        if (!nodeName.includes(searchQuery) && !nodeDesc.includes(searchQuery)) return;
+                        const jobName = normalizeSortText(node.job_name);
+                        if (
+                            !nodeName.includes(searchQuery)
+                            && !nodeDesc.includes(searchQuery)
+                            && !jobName.includes(searchQuery)
+                        ) return;
                     }
 
                     const isChecked = selectedMacs.has(node.mac) ? 'checked' : '';
